@@ -138,20 +138,33 @@ _download() {
   eval "${_DOWNLOAD_CMD} ${_arg} '${1}'"
 }
 
+declare -A -g PKG_xmllint PKG_gpg
+PKG_xmllint[apt]="libxml2-utils"
+PKG_xmllint[dnf]="libxml2"
+PKG_xmllint[pacman]="libxml2"
+PKG_gpg[apt]="gnupg"
+PKG_gpg[dnf]="gnupg2"
+PKG_gpg[pacman]="gnupg"
+PKG_bc[apt]="bc"
+PKG_bc[dnf]="bc"
+PKG_bc[pacman]="bc"
 _install_deps() {
   #TODO
   _log w "Make sure commands '${_COMMANDS[@]}' are available!"
-  if ! command -v xmllint >/dev/null; then
-    if command -v apt >/dev/null; then
-      apt install libxml2-utils
-    elif command -v dnf >/dev/null; then
-      dnf -y install libxml2
-    elif command -v yum >/dev/null; then
-      yum -y install libxml2
-    elif command -v pacman >/dev/null; then
-      pacman --noconfirm -S libxml2
+  local __commands="bc gpg xmllint"
+  for __command in ${__commands}; do
+    if ! command -v ${__command} >/dev/null; then
+      if command -v apt >/dev/null; then
+        eval "apt -y install \${PKG_${__command}[apt]}"
+      elif command -v dnf >/dev/null; then
+        eval "dnf -y install \${PKG_${__command}[dnf]}"
+      elif command -v yum >/dev/null; then
+        eval "yum -y install \${PKG_${__command}[dnf]}"
+      elif command -v pacman >/dev/null; then
+        eval "pacman --noconfirm -S \${PKG_${__command}[pacman]}"
+      fi
     fi
-  fi
+  done
 }
 
 _get_mirror() {
@@ -159,18 +172,38 @@ _get_mirror() {
   set +e
   local _country_code=$(_cat 'https://ip2c.org/self' | cut -d';' -f2)
   local _mirrors
-  eval "_mirrors=\$(_cat 'https://api.gentoo.org/mirrors/distfiles.xml' | \
-    xmllint --xpath '/mirrors/mirrorgroup[@country=\"${_country_code}\"]/mirror/uri/text()' -)"
-  if [[ $? == 0 ]]; then
-    local _uri
-    for _uri in ${_mirrors[@]}; do
-      if [[ "${_uri}" =~ ^https ]]; then
-        MIRROR="${_uri}"
-        break;
-      fi
-    done
+  if [[ $(xmllint --version 2>&1 | head -1 | cut -d' ' -f5) -ge 20909 ]]; then
+    eval "_mirrors=\$(_cat 'https://api.gentoo.org/mirrors/distfiles.xml' | \
+      xmllint --xpath '/mirrors/mirrorgroup[@country=\"${_country_code}\"]/mirror/uri/text()' -)"
+  else
+    eval "_mirrors=\$(_cat 'https://api.gentoo.org/mirrors/distfiles.xml' | \
+      xmllint --xpath '/mirrors/mirrorgroup[@country=\"${_country_code}\"]/mirror/uri' -)"
+    _mirrors=${_mirrors//<\/uri>/$'\n'}
+    _mirrors=$(echo "${_mirrors}" | cut -d'>' -f2)
   fi
   set -e
+  local _uri __selected
+  _mirrors=( ${_mirrors} )
+  _log n "mirror list in ${_country_code}:"
+  for (( i = 0; i < ${#_mirrors[@]}; ++i )); do
+    _uri=${_mirrors[i]}
+    if [[ "${_uri}" =~ ^https ]] && [[ -z ${MIRROR} ]]; then
+      MIRROR="${_uri}"
+      _log n " -*-[${i}] ${_uri}"
+    else
+      _log n "    [${i}] ${_uri}"
+    fi
+  done
+  while [[ ${#_mirrors[@]} -gt 0 ]]; do
+    read -p "Choose prefered mirror (enter the num, empty for default): " __selected
+    [[ -n ${__selected} ]] || break
+    if [[ ${__selected} =~ ^[[:digit:]]+$ ]] && [[ -n ${_mirrors[${__selected}]} ]]; then
+      MIRROR=${_mirrors[${__selected}]}
+      break;
+    else
+      _log w "out of range!"
+    fi
+  done
   if [[ -z ${MIRROR} ]]; then
     MIRROR="https://gentoo.osuosl.org/"
   fi
@@ -247,17 +280,20 @@ _get_stage3() {
 
 _unpack_stage3() {
   pushd ${NEWROOT}
-  tar xpvf ${STAGE3} --xattrs-include='*.*' --numeric-owner
+  _log w ">>> tar xpf ${STAGE3} --xattrs-include='*.*' --numeric-owner"
+  tar xpf ${STAGE3} --xattrs-include='*.*' --numeric-owner
   popd
 }
 
 _ready_chroot() {
+  _log i "mounting necessaries ..."
   mount -t proc /proc "${NEWROOT}/proc"
   mount --rbind /sys "${NEWROOT}/sys"
   mount --make-rslave "${NEWROOT}/sys"
   mount --rbind /dev "${NEWROOT}/dev"
   mount --make-rslave "${NEWROOT}/dev"
   mount -t tmpfs -o nosuid,nodev,mode=0755 run "${NEWROOT}/run"
+  _log i "copying necessaries ..."
   cp -aL /etc/fstab "${NEWROOT}/etc/"
   cp -aL /etc/resolv.conf "${NEWROOT}/etc/" || true
   cp -aL /etc/hosts "${NEWROOT}/etc/" || true
@@ -265,9 +301,11 @@ _ready_chroot() {
   cp -aL /lib/modules "${NEWROOT}/lib/" || true
   local rootshadow=$(grep -E '^root:' /etc/shadow)
   if [[ ${rootshadow} =~ ^root:\*: ]]; then
+    _log i "setting root password to 'distro2gentoo' ..."
     local _newpass=$(openssl passwd -6 distro2gentoo)
     local _newday=$(echo `date +%s`/24/60/60 | bc)
   else
+    _log i "backuping root password ..."
     local _newpass=$(echo ${rootshadow} | cut -d':' -f2)
     local _newday=$(echo ${rootshadow} | cut -d':' -f3)
   fi
@@ -301,13 +339,14 @@ _prepare_bootloader() {
   mount /boot || true
   local _bootdev
   if _bootdev=$(findmnt -no SOURCE /boot); then
+    _log i ">>> mount --bind /boot ${NEWROOT}/boot"
     mount --bind /boot "${NEWROOT}/boot"
   else
     _bootdev=$(findmnt -no SOURCE /)
   fi
   _bootdev=$(lsblk -npsro TYPE,NAME "${_bootdev}" | awk '($1 == "disk") { print $2}')
   if [[ ! ${_bootdev} =~ ^/dev/mapper ]]; then
-    _chroot_exec grub-install --target=i386-pc --debug ${_bootdev} && \
+    _chroot_exec grub-install --target=i386-pc ${_bootdev} && \
     _grub_configed=1 || true
   fi
   # prepare efi
@@ -328,9 +367,10 @@ _prepare_bootloader() {
     fi
     if [[ -n ${EFIMNT} ]] ;then
       mkdir -p "${NEWROOT}${EFIMNT}"
+      _log i ">>> mount --bind ${EFIMNT} ${NEWROOT}${EFIMNT}"
       mount --bind ${EFIMNT} "${NEWROOT}${EFIMNT}"
-      _chroot_exec grub-install --target=x86_64-efi --efi-directory=${EFIMNT} --bootloader-id=Gentoo --debug
-      _chroot_exec grub-install --target=x86_64-efi --efi-directory=${EFIMNT} --removable --debug
+      _chroot_exec grub-install --target=x86_64-efi --efi-directory=${EFIMNT} --bootloader-id=Gentoo
+      _chroot_exec grub-install --target=x86_64-efi --efi-directory=${EFIMNT} --removable
       _grub_configed=1
     else
       _log e "Cannot find efi path!"
@@ -347,7 +387,6 @@ fi
 _chroot_exec emerge-webrsync
 _chroot_exec emerge -vnj sys-boot/grub net-misc/openssh ${OPENRC_NETDEP}
 _prepare_bootloader
-_chroot_exec grub-mkconfig -o /boot/grub/grub.cfg
 
 _config_gentoo() {
   sed -Ei -e '/PermitRootLogin/s/^[#[:space:]]*PermitRootLogin.*/PermitRootLogin yes/' \
@@ -397,6 +436,9 @@ DHCP=yes" >${NEWROOT}/etc/systemd/network/50-dhcp.network
     ln -s net.lo ${NEWROOT}/etc/init.d/net.${_netdev}
     _chroot_exec rc-update add net.${_netdev} default
   fi
+  if [[ $(cat /root/.ssh/authorized_keys) =~ no-port-forwarding ]]; then
+    echo > /root/.ssh/authorized_keys
+  fi
 }
 _config_gentoo
 
@@ -413,9 +455,17 @@ find / \( ! -path '/boot/*' \
 
 _magic_cp() {
   echo ">>> Merging ${1} ..."
-  "${NEWROOT}/lib64"/ld-*.so --library-path "${NEWROOT}/lib64" "${NEWROOT}/bin/cp" -a "${NEWROOT}/${1}" / || true
+  local _subdir
+  if [[ ${1} =~ / ]]; then
+    _subdir=${1%/*}
+  fi
+  "${NEWROOT}/lib64"/ld-*.so --library-path "${NEWROOT}/lib64" "${NEWROOT}/bin/cp" -a "${NEWROOT}/${1}" /${_subdir} || true
 }
 _magic_cp bin
+if ! findmnt /boot &>/dev/null; then
+  "${NEWROOT}/lib64"/ld-*.so --library-path "${NEWROOT}/lib64" "${NEWROOT}/bin/rm" -rf /boot/grub
+  _magic_cp boot/grub
+fi
 _magic_cp sbin
 _magic_cp etc
 _magic_cp lib
@@ -443,6 +493,8 @@ fi
 _log i "removing ${NEWROOT} ..."
 rm -rf ${NEWROOT} || true
 
+_log i ">>> grub-mkconfig -o /boot/grub/grub.cfg"
+grub-mkconfig -o /boot/grub/grub.cfg
 _log i "Syncing ..."
 sync
 _log w "Finished!"
