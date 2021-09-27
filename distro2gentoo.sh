@@ -245,6 +245,7 @@ _get_stage3() {
       _log w "out of range!"
     fi
   done
+  _log i "selected stage3: ${_stages[${_selected}]}"
   _log i "Importing release keys ..."
   gpg --quiet --keyserver hkps://keys.gentoo.org --recv-key 13EBBDBEDE7A12775DFDB1BABB572E0E2D182910
   # prepare signed DIGESTS
@@ -312,6 +313,17 @@ _ready_chroot() {
   eval "sed -Ei '/root:\*:.*/s@root:\*:[[:digit:]]+:@root:${_newpass}:${_newday}:@' '${NEWROOT}/etc/shadow'"
   echo "GRUB_PLATFORMS=\"efi-64 pc\"" >> "${NEWROOT}/etc/portage/make.conf"
   echo "GENTOO_MIRRORS=\"${MIRROR}\"" >> "${NEWROOT}/etc/portage/make.conf"
+  # kmod USE+zstd when it's Arch Linux
+  if grep -E '^ID=arch$' /etc/os-release &>/dev/null; then
+    local _use_path="${NEWROOT}/etc/portage/package.use"
+    if [[ -f "${_use_path}" ]]; then
+      echo "sys-apps/kmod zstd" >>"${_use_path}"
+    else
+      mkdir -p "${_use_path}"
+      echo "sys-apps/kmod zstd" >>"${_use_path}/kmod"
+    fi
+    ONETIME_PKGS="sys-apps/kmod"
+  fi
 }
 
 _prepare_env() {
@@ -329,8 +341,8 @@ _prepare_env() {
 _prepare_env
 
 _chroot_exec() {
-  _log w ">>> chroot '${NEWROOT}' /bin/bash -c '${@}'"
-  eval "chroot '${NEWROOT}' /bin/bash -c '${@}'"
+  _log w ">>> chroot '${NEWROOT}' /bin/bash -lc '${@}'"
+  eval "chroot '${NEWROOT}' /bin/bash -lc '${@}'"
 }
 
 _prepare_bootloader() {
@@ -385,6 +397,8 @@ if [[ ! ${STAGE3} =~ systemd ]]; then
   OPENRC_NETDEP="net-misc/netifrc"
 fi
 _chroot_exec emerge-webrsync
+[[ -z ${ONETIME_PKGS} ]] || \
+  _chroot_exec emerge -1vj ${ONETIME_PKGS}
 _chroot_exec emerge -vnj sys-boot/grub net-misc/openssh ${OPENRC_NETDEP}
 _prepare_bootloader
 
@@ -436,7 +450,7 @@ DHCP=yes" >${NEWROOT}/etc/systemd/network/50-dhcp.network
     ln -s net.lo ${NEWROOT}/etc/init.d/net.${_netdev}
     _chroot_exec rc-update add net.${_netdev} default
   fi
-  if [[ $(cat /root/.ssh/authorized_keys) =~ no-port-forwarding ]]; then
+  if [[ $(cat /root/.ssh/authorized_keys 2>/dev/null) =~ no-port-forwarding ]]; then
     echo > /root/.ssh/authorized_keys
   fi
 }
@@ -462,7 +476,7 @@ _magic_cp() {
   "${NEWROOT}/lib64"/ld-*.so --library-path "${NEWROOT}/lib64" "${NEWROOT}/bin/cp" -a "${NEWROOT}/${1}" /${_subdir} || true
 }
 _magic_cp bin
-if ! findmnt /boot &>/dev/null; then
+if ! "${NEWROOT}/lib64"/ld-*.so --library-path "${NEWROOT}/lib64" "${NEWROOT}/bin/findmnt" /boot &>/dev/null; then
   "${NEWROOT}/lib64"/ld-*.so --library-path "${NEWROOT}/lib64" "${NEWROOT}/bin/rm" -rf /boot/grub
   _magic_cp boot/grub
 fi
