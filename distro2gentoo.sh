@@ -88,7 +88,7 @@ _pre_check() {
   local _ret=000
   # check root
   [[ ${EUID} == 0 ]] || _ret=1${_ret:1}
-  # check cpu arch (only tested for arm64/amd64 now)
+  # check cpu arch (only tested for amd64 now)
   [[ ${CPUARCH} =~ ^amd64$ ]] || _ret=${_ret:0:1}1${_ret:2}
   # check newroot dir
   [[ -L ${NEWROOT} || -e ${NEWROOT} ]] && _ret=${_ret:0:2}1 || true
@@ -150,7 +150,7 @@ PKG_bc[dnf]="bc"
 PKG_bc[pacman]="bc"
 _install_deps() {
   #TODO
-  _log w "Make sure commands '${_COMMANDS[@]}' are available!"
+  _log i "Make sure commands '${_COMMANDS[@]}' are available."
   local __commands="bc gpg xmllint"
   for __command in ${__commands}; do
     if ! command -v ${__command} >/dev/null; then
@@ -298,7 +298,8 @@ _ready_chroot() {
   cp -aL /etc/fstab "${NEWROOT}/etc/"
   cp -aL /etc/resolv.conf "${NEWROOT}/etc/" || true
   cp -aL /etc/hosts "${NEWROOT}/etc/" || true
-  cp -aL /etc/hostname "${NEWROOT}/etc/" || true
+  cp -aL /etc/hostname "${NEWROOT}/etc/" || \
+    echo "gentoo" > "${NEWROOT}/etc/hostname"
   cp -aL /lib/modules "${NEWROOT}/lib/" || true
   local rootshadow=$(grep -E '^root:' /etc/shadow)
   if [[ ${rootshadow} =~ ^root:\*: ]]; then
@@ -338,6 +339,13 @@ _prepare_env() {
   _unpack_stage3
   _ready_chroot
 }
+echo
+_log n "    1. This script won't format disks,"
+_log n "    2. will remove all mounted data excepts /home, /root,"
+_log n "                                            kernels & modules"
+echo
+_log n "           *** BACKUP YOUR DATA!!! ***"
+echo
 _prepare_env
 
 _chroot_exec() {
@@ -453,19 +461,25 @@ DHCP=yes" >${NEWROOT}/etc/systemd/network/50-dhcp.network
   if [[ $(cat /root/.ssh/authorized_keys 2>/dev/null) =~ no-port-forwarding ]]; then
     echo > /root/.ssh/authorized_keys
   fi
+  _chroot_exec touch /etc/machine-id
 }
 _config_gentoo
 
 _log w "Deleting old system files ..."
-find / \( ! -path '/boot/*' \
-  -and ! -path '/dev/*' \
-  -and ! -path '/home/*' \
-  -and ! -path '/proc/*' \
-  -and ! -path '/root/*' \
-  -and ! -path '/run/*' \
-  -and ! -path '/sys/*' \
-  -and ! -path '/selinux/*' \
-  -and ! -path "${NEWROOT}/*" \) -delete 2>/dev/null || true
+set -x
+find / \( ! -path '/' \
+  -and ! -regex '/boot.*' \
+  -and ! -regex '/dev.*' \
+  -and ! -regex '/home.*' \
+  -and ! -regex '/proc.*' \
+  -and ! -regex '/root.*' \
+  -and ! -regex '/run.*' \
+  -and ! -regex '/sys.*' \
+  -and ! -regex '/selinux.*' \
+  -and ! -regex '/tmp.*' \
+  -and ! -regex "${EFIMNT:-/4f49e86d-275b-4766-94a9-8ea680d5e2de}.*" \
+  -and ! -regex "${NEWROOT}.*" \) -delete || true
+set +x
 
 _magic_cp() {
   echo ">>> Merging ${1} ..."
@@ -484,9 +498,6 @@ _magic_cp sbin
 _magic_cp etc
 _magic_cp lib
 _magic_cp lib64
-_magic_cp mnt
-_magic_cp opt
-_magic_cp tmp
 _magic_cp usr
 _magic_cp var
 
@@ -524,3 +535,11 @@ _log n "    # echo b >/proc/sysrq-trigger"
 _log n "  and Enjoy Gentoo!"
 echo
 
+WAIT=30
+_log n "wait to guarantee data synced for some file systems/special environment ..."
+while [[ ${WAIT} -ge 0 ]]; do
+  echo -en "\e[G\e[K  ${WAIT} "
+  WAIT=$((${WAIT} -  1))
+  sleep 1
+done
+echo
