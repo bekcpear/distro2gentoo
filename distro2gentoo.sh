@@ -64,7 +64,7 @@ _log() {
     if [[ ${lv} != 2 ]]; then
       prefix="[$(date '+%Y-%m-%d %H:%M:%S')] "
     fi
-    eval ">${ofd} echo -e '${color}${prefix}${msg//\'/\'\\\'\'}${reset}'"
+    eval ">${ofd} echo -e \"${color}${prefix}${msg//\"/\\\"}${reset}\""
   fi
 }
 
