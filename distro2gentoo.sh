@@ -217,10 +217,10 @@ _get_stage3() {
   local -a _stages _stages_path
   _log i "Downloading stage3 tarball list ..."
   while read -r _path _; do
-    [[ ${_path} != "#" ]] || continue
+    [[ ! ${_path} =~ ^# ]] || continue
     _stages+=( "${_path##*/}" )
     _stages_path+=( "${_path}" )
-  done <<<$(_cat "${_list}")
+  done <<<"$(_cat ${_list})"
   _log n "stage3 list:"
   for (( i = 0; i < ${#_stages[@]}; ++i )); do
     local _stage=${_stages[i]}
@@ -262,7 +262,7 @@ _get_stage3() {
       _sha512sum=${__sha512sum}
       break
     fi
-  done <<<$(grep -A1 'SHA512' ${DIGESTS})
+  done <<<"$(grep -A1 'SHA512' ${DIGESTS})"
   # prepare stage3 tarball
   STAGE3="/${_stages[${_selected}]}"
   if [[ ! -e ${STAGE3} ]]; then
@@ -424,7 +424,7 @@ _config_gentoo() {
       else
         _netip6+=( ${__ip} )
       fi
-    done <<<$(ip -d -o a show dev ${_netdev} scope global)
+    done <<<"$(ip -d -o a show dev ${_netdev} scope global)"
   fi
   if [[ ${STAGE3} =~ systemd ]]; then
     if [[ ${_netproto} != dhcp ]]; then
