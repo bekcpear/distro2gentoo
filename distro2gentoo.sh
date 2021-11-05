@@ -88,8 +88,8 @@ _pre_check() {
   local _ret=000
   # check root
   [[ ${EUID} == 0 ]] || _ret=1${_ret:1}
-  # check cpu arch (only tested for amd64 now)
-  [[ ${CPUARCH} =~ ^amd64$ ]] || _ret=${_ret:0:1}1${_ret:2}
+  # check cpu arch (only tested for amd64/arm64 now)
+  [[ ${CPUARCH} =~ ^amd64|arm64$ ]] || _ret=${_ret:0:1}1${_ret:2}
   # check newroot dir
   [[ -L ${NEWROOT} || -e ${NEWROOT} ]] && _ret=${_ret:0:2}1 || true
   case ${_ret} in
@@ -97,7 +97,7 @@ _pre_check() {
       _log e "Please run this shell as the root user!"
       ;;&
     ?1?)
-      _log e "This script only tested for amd64 arch now!"
+      _log e "This script only tested for amd64/arm64 arch now!"
       ;;&
     *1)
       _log e "New root path '${NEWROOT}' exists, remove it first!"
@@ -228,7 +228,7 @@ _get_stage3() {
       unset _stages[i]
       continue
     fi
-    if [[ ${_stage} =~ ^stage3-amd64-openrc- ]]; then
+    if [[ ${_stage} =~ ^stage3-amd64-openrc-|stage3-arm64-2 ]]; then
       _selected=${i}
       _log n " -*-[${i}] ${_stage}"
     else
@@ -286,6 +286,7 @@ _unpack_stage3() {
   popd
 }
 
+_GRUB_CMDLINE_LINUX=''
 _ready_chroot() {
   _log i "mounting necessaries ..."
   mount -t proc /proc "${NEWROOT}/proc"
@@ -301,18 +302,24 @@ _ready_chroot() {
   cp -aL /etc/hostname "${NEWROOT}/etc/" || \
     echo "gentoo" > "${NEWROOT}/etc/hostname"
   cp -aL /lib/modules "${NEWROOT}/lib/" || true
+  _GRUB_CMDLINE_LINUX=$(grep '^GRUB_CMDLINE_LINUX' /etc/default/grub | cut -d'"' -f2)
   local rootshadow=$(grep -E '^root:' /etc/shadow)
+  local _newpass _newday
   if [[ ${rootshadow} =~ ^root:\*: ]]; then
     _log i "setting root password to 'distro2gentoo' ..."
-    local _newpass=$(openssl passwd -6 distro2gentoo)
-    local _newday=$(echo `date +%s`/24/60/60 | bc)
+    _newpass=$(openssl passwd -1 distro2gentoo)
+    _newday=$(echo `date +%s`/24/60/60 | bc)
   else
     _log i "backuping root password ..."
-    local _newpass=$(echo ${rootshadow} | cut -d':' -f2)
-    local _newday=$(echo ${rootshadow} | cut -d':' -f3)
+    _newpass=$(echo ${rootshadow} | cut -d':' -f2)
+    _newday=$(echo ${rootshadow} | cut -d':' -f3)
   fi
   eval "sed -Ei '/root:\*:.*/s@root:\*:[[:digit:]]+:@root:${_newpass}:${_newday}:@' '${NEWROOT}/etc/shadow'"
-  echo "GRUB_PLATFORMS=\"efi-64 pc\"" >> "${NEWROOT}/etc/portage/make.conf"
+  if [[ ${CPUARCH} == amd64 ]]; then
+    echo "GRUB_PLATFORMS=\"efi-64 pc\"" >> "${NEWROOT}/etc/portage/make.conf"
+  else
+    echo "GRUB_PLATFORMS=\"efi-64\"" >> "${NEWROOT}/etc/portage/make.conf"
+  fi
   echo "GENTOO_MIRRORS=\"${MIRROR}\"" >> "${NEWROOT}/etc/portage/make.conf"
   # kmod USE+zstd when it's Arch Linux
   if grep -E '^ID=arch$' /etc/os-release &>/dev/null; then
@@ -330,6 +337,7 @@ _ready_chroot() {
 _prepare_env() {
   CPUARCH=$(uname -m)
   CPUARCH=${CPUARCH/x86_64/amd64}
+  CPUARCH=${CPUARCH/aarch64/arm64}
   NEWROOT="/root.d2g.${CPUARCH}"
   _pre_check
   mkdir -p "${NEWROOT}"
@@ -354,20 +362,23 @@ _chroot_exec() {
 }
 
 _prepare_bootloader() {
+  sed -i "/GRUB_CMDLINE_LINUX=\"\"/aGRUB_CMDLINE_LINUX=\"${_GRUB_CMDLINE_LINUX}\"" ${NEWROOT}/etc/default/grub
   local _grub_configed=0
   # find the boot device
   mount /boot || true
-  local _bootdev
-  if _bootdev=$(findmnt -no SOURCE /boot); then
-    _log i ">>> mount --bind /boot ${NEWROOT}/boot"
-    mount --bind /boot "${NEWROOT}/boot"
-  else
-    _bootdev=$(findmnt -no SOURCE /)
-  fi
-  _bootdev=$(lsblk -npsro TYPE,NAME "${_bootdev}" | awk '($1 == "disk") { print $2}')
-  if [[ ! ${_bootdev} =~ ^/dev/mapper ]]; then
-    _chroot_exec grub-install --target=i386-pc ${_bootdev} && \
-    _grub_configed=1 || true
+  if [[ ${CPUARCH} == amd64 ]]; then
+    local _bootdev
+    if _bootdev=$(findmnt -no SOURCE /boot); then
+      _log i ">>> mount --bind /boot ${NEWROOT}/boot"
+      mount --bind /boot "${NEWROOT}/boot"
+    else
+      _bootdev=$(findmnt -no SOURCE /)
+    fi
+    _bootdev=$(lsblk -npsro TYPE,NAME "${_bootdev}" | awk '($1 == "disk") { print $2}')
+    if [[ ! ${_bootdev} =~ ^/dev/mapper ]]; then
+      _chroot_exec grub-install --target=i386-pc ${_bootdev} && \
+      _grub_configed=1 || true
+    fi
   fi
   # prepare efi
   if [[ -n ${EFI_ENABLED} ]]; then
@@ -389,8 +400,13 @@ _prepare_bootloader() {
       mkdir -p "${NEWROOT}${EFIMNT}"
       _log i ">>> mount --bind ${EFIMNT} ${NEWROOT}${EFIMNT}"
       mount --bind ${EFIMNT} "${NEWROOT}${EFIMNT}"
-      _chroot_exec grub-install --target=x86_64-efi --efi-directory=${EFIMNT} --bootloader-id=Gentoo
-      _chroot_exec grub-install --target=x86_64-efi --efi-directory=${EFIMNT} --removable
+      if [[ ${CPUARCH} == amd64 ]]; then
+        local _target="x86_64-efi"
+      else
+        local _target="arm64-efi"
+      fi
+      _chroot_exec grub-install --target=${_target} --efi-directory=${EFIMNT} --bootloader-id=Gentoo
+      _chroot_exec grub-install --target=${_target} --efi-directory=${EFIMNT} --removable
       _grub_configed=1
     else
       _log e "Cannot find efi path!"
@@ -405,6 +421,7 @@ if [[ ! ${STAGE3} =~ systemd ]]; then
   OPENRC_NETDEP="net-misc/netifrc"
 fi
 _chroot_exec emerge-webrsync
+
 [[ -z ${ONETIME_PKGS} ]] || \
   _chroot_exec emerge -1vj ${ONETIME_PKGS}
 _chroot_exec emerge -vnj sys-boot/grub net-misc/openssh ${OPENRC_NETDEP}
@@ -524,8 +541,12 @@ _log i "Syncing ..."
 sync
 _log w "Finished!"
 echo
+_log w "    For some dist-specified kernels, when openrc init selected, you may need to install"
+_log w "      sys-kernel/gentoo-kernel-bin"
+_log w "    and update the grub.cfg and reload into the new kernel to make the cgroup fs accessible."
+echo
 _log n "  Normal users (if any) have been dropped (home directories is preserved)."
-_log n "  root password is preserved or 'distro2gentoo' if it's not set."
+_log n "  root password is preserved or set to 'distro2gentoo' if it's not set."
 _log n "  ssh server enabled and listened at port 22, can be connected by root user with password authentication."
 _log n "  run:"
 _log n "    # . /etc/profile"
