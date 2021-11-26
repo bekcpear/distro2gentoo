@@ -309,6 +309,7 @@ _unpack_stage3() {
 }
 
 _GRUB_CMDLINE_LINUX=''
+_GRUB_CMDLINE_LINUX_DEFAULT=''
 _ready_chroot() {
   _log i "mounting necessaries ..."
   mount -t proc /proc "${NEWROOT}/proc"
@@ -327,6 +328,9 @@ _ready_chroot() {
   _GRUB_CMDLINE_LINUX=$(grep '^GRUB_CMDLINE_LINUX=' /etc/default/grub | cut -d'"' -f2)
   _GRUB_CMDLINE_LINUX=${_GRUB_CMDLINE_LINUX//quiet/}
   _GRUB_CMDLINE_LINUX=${_GRUB_CMDLINE_LINUX//splash/}
+  _GRUB_CMDLINE_LINUX_DEFAULT=$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub | cut -d'"' -f2)
+  _GRUB_CMDLINE_LINUX_DEFAULT=${_GRUB_CMDLINE_LINUX_DEFAULT//quiet/}
+  _GRUB_CMDLINE_LINUX_DEFAULT=${_GRUB_CMDLINE_LINUX_DEFAULT//splash/}
   local rootshadow=$(grep -E '^root:' /etc/shadow)
   local _newpass _newday
   if [[ ${rootshadow} =~ ^root:\*: ]]; then
@@ -387,6 +391,7 @@ _chroot_exec() {
 
 _prepare_bootloader() {
   sed -i "/GRUB_CMDLINE_LINUX=\"\"/aGRUB_CMDLINE_LINUX=\"${_GRUB_CMDLINE_LINUX}\"" ${NEWROOT}/etc/default/grub
+  sed -i "/GRUB_CMDLINE_LINUX_DEFAULT=\"\"/aGRUB_CMDLINE_LINUX_DEFAULT=\"${_GRUB_CMDLINE_LINUX_DEFAULT}\"" ${NEWROOT}/etc/default/grub
   local _grub_configed=0
   # find the boot device
   mount /boot || true
