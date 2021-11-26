@@ -5,3 +5,9 @@
 ```bash
 ./distro2gentoo.sh
 ```
+
+#### Demo
+
+https://gitlab.com/cwittlut/assets/-/raw/main/distro2gentoo-demo.mp4
+
+![](https://gitlab.com/cwittlut/assets/-/raw/main/distro2gentoo-demo.mp4)
