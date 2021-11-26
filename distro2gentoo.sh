@@ -112,6 +112,10 @@ _pre_check() {
   fi
 }
 
+if grep -E '^ID=arch$' /etc/os-release &>/dev/null; then
+  _is_archlinux=1
+fi
+
 _COMMANDS="bc findmnt gpg ip openssl wc xmllint"
 _DOWNLOAD_CMD="wget"
 _DOWNLOAD_CMD_QUIET="wget -qO -"
@@ -276,6 +280,7 @@ _get_stage3() {
     _log e "      real: ${_real_sha512sum}"
     _fatal "Abort!"
   fi
+  _log i "Matched sha512sum of ${STAGE3}"
   _log i "Stage3 tarball has been stored as '${STAGE3}'."
 }
 
@@ -302,7 +307,9 @@ _ready_chroot() {
   cp -aL /etc/hostname "${NEWROOT}/etc/" || \
     echo "gentoo" > "${NEWROOT}/etc/hostname"
   cp -aL /lib/modules "${NEWROOT}/lib/" || true
-  _GRUB_CMDLINE_LINUX=$(grep '^GRUB_CMDLINE_LINUX' /etc/default/grub | cut -d'"' -f2)
+  _GRUB_CMDLINE_LINUX=$(grep '^GRUB_CMDLINE_LINUX=' /etc/default/grub | cut -d'"' -f2)
+  _GRUB_CMDLINE_LINUX=${_GRUB_CMDLINE_LINUX//quiet/}
+  _GRUB_CMDLINE_LINUX=${_GRUB_CMDLINE_LINUX//splash/}
   local rootshadow=$(grep -E '^root:' /etc/shadow)
   local _newpass _newday
   if [[ ${rootshadow} =~ ^root:\*: ]]; then
@@ -322,7 +329,7 @@ _ready_chroot() {
   fi
   echo "GENTOO_MIRRORS=\"${MIRROR}\"" >> "${NEWROOT}/etc/portage/make.conf"
   # kmod USE+zstd when it's Arch Linux
-  if grep -E '^ID=arch$' /etc/os-release &>/dev/null; then
+  if [[ -n ${_is_archlinux} ]]; then
     local _use_path="${NEWROOT}/etc/portage/package.use"
     if [[ -f "${_use_path}" ]]; then
       echo "sys-apps/kmod zstd" >>"${_use_path}"
@@ -535,8 +542,17 @@ fi
 _log i "removing ${NEWROOT} ..."
 rm -rf ${NEWROOT} || true
 
+# patch grub-mkconfig when it's Arch Linux
+if [[ -n ${_is_archlinux} ]]; then
+  _log i ">>> patching /etc/grub.d/10_linux for Arch Linux kernel name"
+  sed -i.bak -E '/sed\s-e\s"s,\^\[\^0/s/\[\^0\-9\]\*/vmlinuz/' /etc/grub.d/10_linux
+fi
 _log i ">>> grub-mkconfig -o /boot/grub/grub.cfg"
 grub-mkconfig -o /boot/grub/grub.cfg
+if [[ -n ${_is_archlinux} ]]; then
+  _log i ">>> restoring /etc/grub.d/10_linux"
+  mv /etc/grub.d/10_linux{.bak,}
+fi
 _log i "Syncing ..."
 sync
 _log w "Finished!"
@@ -545,12 +561,24 @@ _log w "    For some dist-specified kernels, when openrc init selected, you may 
 _log w "      sys-kernel/gentoo-kernel-bin"
 _log w "    and update the grub.cfg and reload into the new kernel to make the cgroup fs accessible."
 echo
-_log n "  Normal users (if any) have been dropped (home directories is preserved)."
-_log n "  root password is preserved or set to 'distro2gentoo' if it's not set."
-_log n "  ssh server enabled and listened at port 22, can be connected by root user with password authentication."
+_log n "  * normal users (if any) have been dropped (home directories is preserved)."
+echo
+_log n "  * root password is preserved or set to 'distro2gentoo' if it's not set."
+echo
+_log n "  * SSH server is enabled and will be listening on port 22,"
+_log n "    it can be connected by root user with password authentication."
+echo
+if [[ -n ${_is_archlinux} ]]; then
+  _log n "  If you want to continue using this Arch Linux kernel,"
+  _log n "  you'd better rename it with a more common name,"
+  _log n "    e.g.: vmlinuz-5.10.76-xxx initramfs-5.10.76-xxx.img"
+  _log n "  otherwise, Grub utils on Gentoo may not recognize the version correctly."
+  echo
+fi
 _log n "  run:"
 _log n "    # . /etc/profile"
 _log n "  to enter the new environment."
+echo
 _log n "  reboot:"
 _log n "    # echo b >/proc/sysrq-trigger"
 _log n "  and Enjoy Gentoo!"
