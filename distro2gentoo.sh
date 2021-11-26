@@ -172,7 +172,7 @@ _install_deps() {
 }
 
 _get_mirror() {
-  _log i "Setting mirror ..."
+  _log i "Getting mirror list..."
   set +e
   local _country_code=$(_cat 'https://ip2c.org/self' | cut -d';' -f2)
   local _mirrors
@@ -187,7 +187,9 @@ _get_mirror() {
   fi
   set -e
   local _uri __selected
+  _mirrors=$(sed -E '/^rsync/d' <<<"${_mirrors}")
   _mirrors=( ${_mirrors} )
+  _log i "Setting mirror ..."
   _log n "mirror list in ${_country_code}:"
   for (( i = 0; i < ${#_mirrors[@]}; ++i )); do
     _uri=${_mirrors[i]}
@@ -198,6 +200,8 @@ _get_mirror() {
       _log n "    [${i}] ${_uri}"
     fi
   done
+  _mirrors+=( "CUSTOM" )
+  _log n "    [${i}] <Enter custom URL>"
   while [[ ${#_mirrors[@]} -gt 0 ]]; do
     read -p "Choose prefered mirror (enter the num, empty for default): " __selected
     [[ -n ${__selected} ]] || break
@@ -208,6 +212,16 @@ _get_mirror() {
       _log w "out of range!"
     fi
   done
+  if [[ ${MIRROR} == CUSTOM ]]; then
+    _set_custom_mirror() {
+      read -p "Enter your custom URL: " MIRROR
+      if [[ ! ${MIRROR} =~ ^(http[s]?|ftp):// ]]; then
+        _log e "Please use http[s] or ftp URL."
+        _set_custom_mirror
+      fi
+    }
+    _set_custom_mirror
+  fi
   if [[ -z ${MIRROR} ]]; then
     MIRROR="https://gentoo.osuosl.org/"
   fi
@@ -239,6 +253,9 @@ _get_stage3() {
       _log n "    [${i}] ${_stage}"
     fi
   done
+  if [[ ${#_stages[@]} < 1 ]]; then
+    _fatal "No stage3 list, please check the mirror URL or your network."
+  fi
   while :; do
     read -p "Choose prefered stage3 (enter the num, empty for default): " __selected
     [[ -n ${__selected} ]] || break
@@ -545,13 +562,13 @@ rm -rf ${NEWROOT} || true
 # patch grub-mkconfig when it's Arch Linux
 if [[ -n ${_is_archlinux} ]]; then
   _log i ">>> patching /etc/grub.d/10_linux for Arch Linux kernel name"
-  sed -i.bak -E '/sed\s-e\s"s,\^\[\^0/s/\[\^0\-9\]\*/vmlinuz/' /etc/grub.d/10_linux
+  sed -i.bak~ -E '/sed\s-e\s"s,\^\[\^0/s/\[\^0\-9\]\*/vmlinuz/' /etc/grub.d/10_linux
 fi
 _log i ">>> grub-mkconfig -o /boot/grub/grub.cfg"
 grub-mkconfig -o /boot/grub/grub.cfg
 if [[ -n ${_is_archlinux} ]]; then
   _log i ">>> restoring /etc/grub.d/10_linux"
-  mv /etc/grub.d/10_linux{.bak,}
+  mv /etc/grub.d/10_linux{.bak~,}
 fi
 _log i "Syncing ..."
 sync
