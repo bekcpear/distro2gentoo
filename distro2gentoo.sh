@@ -113,7 +113,6 @@ _pre_check() {
   fi
 }
 
-_COMMANDS="bc findmnt gpg ip openssl wc xmllint tr sort"
 _DOWNLOAD_CMD="wget"
 _DOWNLOAD_CMD_QUIET="wget -qO -"
 if command -v wget >/dev/null; then
@@ -139,30 +138,84 @@ _download() {
   eval "${_DOWNLOAD_CMD} ${_arg} '${1}'"
 }
 
-declare -A -g PKG_xmllint PKG_gpg
+#test -e /etc/os-release && _os_release='/etc/os-release' || _os_release='/usr/lib/os-release'
+#_DISTRO_ID=$(. ${_os_release}; echo -n "${ID}")
+#_log i "Current system ID: ${_DISTRO_ID}"
+#echo
+
+_COMMANDS="awk bc findmnt gpg ip openssl wc xmllint tr sort"
+
+declare -A -g PKG_xmllint
 PKG_xmllint[apt]="libxml2-utils"
 PKG_xmllint[dnf]="libxml2"
 PKG_xmllint[pacman]="libxml2"
+PKG_xmllint[zypper]="libxml2-tools"
+PKG_xmllint[urpmi]="lib64xml2"
+PKG_xmllint[opkg]="libxml2"
+PKG_xmllint[xbps-install]="libxml2"
+
+declare -A -g PKG_gpg
 PKG_gpg[apt]="gnupg"
 PKG_gpg[dnf]="gnupg2"
 PKG_gpg[pacman]="gnupg"
+PKG_gpg[zypper]="gpg2"
+PKG_gpg[urpmi]="gnupg2"
+PKG_gpg[opkg]="gnupg"
+PKG_gpg[xbps-install]="gnupg"
+
+declare -A -g PKG_bc
 PKG_bc[apt]="bc"
 PKG_bc[dnf]="bc"
 PKG_bc[pacman]="bc"
+PKG_bc[zypper]="bc"
+PKG_bc[urpmi]="bc"
+PKG_bc[opkg]="bc"
+PKG_bc[xbps-install]="bc"
+
+declare -A -g PKG_cacerts
+PKG_cacerts[apt]="ca-certificates"
+PKG_cacerts[dnf]="ca-certificates"
+PKG_cacerts[pacman]="ca-certificates"
+PKG_cacerts[zypper]="ca-certificates"
+PKG_cacerts[urpmi]="rootcerts"
+PKG_cacerts[opkg]="ca-certificates"
+PKG_cacerts[xbps-install]="ca-certificates"
+
 _install_deps() {
   #TODO
+
+  function __install_pkg() {
+    local -i _ret=0
+    local __command=${1}
+    if command -v apt >/dev/null; then
+      eval "apt -y install \${PKG_${__command}[apt]}" || _ret=1
+    elif command -v dnf >/dev/null; then
+      eval "dnf -y install \${PKG_${__command}[dnf]}" || _ret=1
+    elif command -v yum >/dev/null; then
+      eval "yum -y install \${PKG_${__command}[dnf]}" || _ret=1
+    elif command -v pacman >/dev/null; then
+      eval "pacman --noconfirm -S \${PKG_${__command}[pacman]}" || _ret=1
+    elif command -v zypper >/dev/null; then # SUSE
+      eval "zypper install -y \${PKG_${__command}[zypper]}" || _ret=1
+    elif command -v urpmi >/dev/null; then # Mageia
+      eval "urpmi --force \${PKG_${__command}[urpmi]}" || _ret=1
+    elif command -v opkg >/dev/null; then # OpenWRT
+      eval "opkg install \${PKG_${__command}[opkg]}" || _ret=1
+    elif command -v xbps-install >/dev/null; then # Void Linux
+      eval "xbps-install -y \${PKG_${__command}[xbps-install]}" || _ret=1
+    else
+      _ret=1
+    fi
+    return ${_ret}
+  }
+
+  __install_pkg cacerts || true
+
   _log i "Make sure commands '${_COMMANDS[@]}' are available."
-  local __commands="bc gpg xmllint"
-  for __command in ${__commands}; do
+  for __command in ${_COMMANDS[@]}; do
     if ! command -v ${__command} >/dev/null; then
-      if command -v apt >/dev/null; then
-        eval "apt -y install \${PKG_${__command}[apt]}"
-      elif command -v dnf >/dev/null; then
-        eval "dnf -y install \${PKG_${__command}[dnf]}"
-      elif command -v yum >/dev/null; then
-        eval "yum -y install \${PKG_${__command}[dnf]}"
-      elif command -v pacman >/dev/null; then
-        eval "pacman --noconfirm -S \${PKG_${__command}[pacman]}"
+      if ! __install_pkg ${__command}; then
+        _fatal "Command '${__command}' not found or install failed!"
       fi
     fi
   done
@@ -576,6 +629,7 @@ _prepare_bootloader() {
     ${NEWROOT}/etc/default/grub
   sed -i "/GRUB_CMDLINE_LINUX_DEFAULT=\"\"/aGRUB_CMDLINE_LINUX_DEFAULT=\"${_GRUB_CMDLINE_LINUX_DEFAULT}\"" \
     ${NEWROOT}/etc/default/grub
+  sed -i "/GRUB_DEFAULT=/aGRUB_DEFAULT=\"saved\"" ${NEWROOT}/etc/default/grub
 
   local _grub_configed=0
   # find the boot device
@@ -824,8 +878,23 @@ fi
 _log i "removing ${NEWROOT} ..."
 rm -rf ${NEWROOT} || true
 
-_log w ">>> grub-mkconfig -o /boot/grub/grub.cfg"
-grub-mkconfig -o /boot/grub/grub.cfg
+_config_grub() {
+  local _submenu _menuentry
+  local -a _menuentries
+  _log w ">>> grub-mkconfig -o /boot/grub/grub.cfg"
+  grub-mkconfig -o /boot/grub/grub.cfg
+  _submenu=$(awk -F\' '/submenu / {print $4}' /boot/grub/grub.cfg)
+  _menuentries=( $(awk -F\' '/menuentry / {print $4}' /boot/grub/grub.cfg) )
+  for __menuentry in ${_menuentries[@]}; do
+    if [[ ${__menuentry} =~ gentoo-dist-adv ]]; then
+      _menuentry=${__menuentry}
+      break
+    fi
+  done
+  _log w ">>> grub-set-default '${_submenu}>${_menuentry}'"
+  eval "grub-set-default '${_submenu}>${_menuentry}'"
+}
+_config_grub
 
 _log i "Syncing ..."
 sync
