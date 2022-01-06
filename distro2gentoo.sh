@@ -617,6 +617,14 @@ _log n "                                            kernels & modules"
 echo
 _log n "           *** BACKUP YOUR DATA!!! ***"
 echo
+WAIT=5
+echo -en "Starting in: \e[33m\e[1m"
+while [[ ${WAIT} -gt 0 ]]; do
+  echo -en "${WAIT} "
+  WAIT=$((${WAIT} -  1))
+  sleep 1
+done
+echo -e "\e[0m"
 _prepare_env
 
 _chroot_exec() {
