@@ -4,6 +4,7 @@
 #
 
 set -e
+export LC_ALL=C
 
 # @VARIABLE: LOGLEVEL
 # #DEFAULT: 2
@@ -100,7 +101,7 @@ _pre_check() {
       _log e "This script only tested for amd64/arm64 arch now!"
       ;;&
     *1)
-      _log e "New root path '${NEWROOT}' exists, remove it first!"
+      _log e "New root path '${NEWROOT}' exists, umount it's subdirs and remove it first!"
       ;;
   esac
   if [[ ${_ret} != 000 ]]; then
@@ -112,11 +113,7 @@ _pre_check() {
   fi
 }
 
-if grep -E '^ID=arch$' /etc/os-release &>/dev/null; then
-  _is_archlinux=1
-fi
-
-_COMMANDS="bc findmnt gpg ip openssl wc xmllint"
+_COMMANDS="bc findmnt gpg ip openssl wc xmllint tr sort"
 _DOWNLOAD_CMD="wget"
 _DOWNLOAD_CMD_QUIET="wget -qO -"
 if command -v wget >/dev/null; then
@@ -308,8 +305,206 @@ _unpack_stage3() {
   popd
 }
 
+declare -a _FS_PATHS _FS_UUIDS _FS_MPS _FS_TYPES _FS_OPTS
+_LVM_ENABLED=0
+_LUKS_ENABLED=0
+_BTRFS_ENABLED=0
+__analyze_fstab() {
+  while read -r _fs _mp _type _opts _; do
+    if [[ ! ${_fs} =~ ^# ]]; then
+      if [[ ${_fs} =~ ^UUID ]]; then
+        _FS_UUIDS+=("${_fs}")
+        _FS_PATHS+=("UNSET")
+      else
+        _FS_UUIDS+=("UNSET")
+        _FS_PATHS+=("${_fs}")
+      fi
+      _FS_MPS+=("${_mp}")
+      _FS_TYPES+=("${_type}")
+      _FS_OPTS+=("${_opts}")
+    fi
+  done <"${NEWROOT}/etc/fstab"
+  while read -r _name _type _mp; do
+    case ${_type} in
+      crypt)
+        _LUKS_ENABLED=1
+        _LUKS_ROOTS+=("${_name}")
+        ;;
+      lvm)
+        _LVM_ENABLED=1
+        _LVM_LVS+=("${_name}")
+        ;;
+      part)
+        :
+        ;;
+      *)
+        :
+        ;;
+    esac
+  done <<<"$(lsblk -lpnoNAME,TYPE,MOUNTPOINT)"
+  local -i i
+  for (( i = 0; i < ${#_FS_TYPES[@]}; ++i )); do
+    if [[ ${_FS_TYPES[i]} == btrfs ]]; then
+      if [[ ${_FS_MPS[i]} =~ ^(/$|/usr|/lib|/var) ]]; then
+        _BTRFS_ENABLED=1
+      fi
+    fi
+  done
+}
+
+# $1: result variable name
+# $2...: cmdline opts
+#TODO more options
+___unify_cmdline_opts() {
+  local _name=${1} _opts _opt _opt_r _tmpv _tmpv_luks_name _tmpv_luks_names
+  shift
+  _opts=$(echo "$*" | tr ' ' '\n' | sort -du | tr '\n' ' ')
+  set - ${_opts}
+  for _opt ; do
+    case "${_opt}" in
+      root=*)
+        if [[ ${_opt_r} =~ [[:space:]]root= ]]; then
+          _log w "Multiple 'root=' options, ignore '${_opt}'"
+        else
+          _opt_r+=" ${_opt}"
+        fi
+        ;;
+      dolvm)
+        while read -r _lv _vg _; do
+          if [[ ${_lv} != "LV" ]]; then
+            break;
+          elif [[ ${_opt_r} =~ rd\.lvm ]]; then
+            _log e "Unexpected error: 'rd.lvm*' and 'dolvm' exist at the same time."
+            break
+          else
+            continue
+          fi
+          _opt_r+=" rd.lvm.lv=${_vg}/${_lv}"
+        done <<<"$(lvdisplay -Co lv_name,vg_name)"
+        ;;
+      rd.lvm.vg=*)
+          _opt_r+=" ${_opt}"
+        ;;
+      rd.lvm.lv=*)
+          _opt_r+=" ${_opt}"
+        ;;
+      crypt_root=*)
+        if [[ ${_opt_r} =~ rd\.luks ]]; then
+          _log e "Unexpected error: 'rd.luks*' and 'crypt_root' exist at the same time."
+          continue
+        fi
+        _opt_r+=" rd.luks.uuid=${_opt/#crypt_root=UUID=/}"
+        ;;
+      luks=*|rd.luks=*)
+        _tmpv=${_opt/#*luks=/}
+        if [[ ${_tmpv} =~ [[:digit:]]+ ]]; then
+          _opt_r+=" rd.luks=${_tmpv}"
+        else
+          case ${_tmpv} in
+            yes)
+              _opt_r+=" rd.luks=1"
+              ;;
+            no)
+              _opt_r+=" rd.luks=0"
+              ;;
+            *)
+              _log e "Unrecognized cmdline option: ${_opt}"
+              ;;
+          esac
+        fi
+        ;;
+      luks.crypttab=*|rd.luks.crypttab=*)
+        _tmpv=${_opt/#*luks.crypttab=/}
+        if [[ ${_tmpv} =~ [[:digit:]]+ ]]; then
+          _opt_r+=" rd.luks.crypttab=${_tmpv}"
+        else
+          case ${_tmpv} in
+            yes)
+              _opt_r+=" rd.luks.crypttab=1"
+              ;;
+            no)
+              _opt_r+=" rd.luks.crypttab=0"
+              ;;
+            *)
+              _log e "Unrecognized cmdline option: ${_opt}"
+              ;;
+          esac
+        fi
+        ;;
+      luks.uuid=*|rd.luks.uuid=*)
+        _tmpv=${_opt/#*luks.uuid=/}
+        _tmpv=${_tmpv/#luks-/}
+        if [[ ${_tmpv} =~ ^[[:alnum:]]{8}-[[:alnum:]]{4}-[[:alnum:]]{4}-[[:alnum:]]{4}-[[:alnum:]]{12}$ ]]; then
+          _opt_r+=" rd.luks.uuid=${_tmpv}"
+        else
+          _log e "Unrecognized cmdline option: ${_opt}"
+        fi
+        ;;
+      luks.name=*|rd.luks.name=*)
+        _tmpv=${_opt/#*luks.uuid=/}
+        _tmpv=${_tmpv/#luks-/}
+        _tmpv_luks_name=${_tmpv/#*=/}
+        _tmpv=${_tmpv/%=*/}
+        if [[ ${_tmpv} =~ ^[[:alnum:]]{8}-[[:alnum:]]{4}-[[:alnum:]]{4}-[[:alnum:]]{4}-[[:alnum:]]{12}$ ]]; then
+          _opt_r+=" rd.luks.uuid=${_tmpv}"
+          if [[ -n ${_tmpv_luks_name} ]]; then
+            _log w "Name '${_tmpv_luks_name}' of cmdline option '${_opt}' has been stripped."
+            _tmpv_luks_names+=" ${_tmpv_luks_name}"
+          fi
+        else
+          _log e "Unrecognized cmdline option: ${_opt}"
+        fi
+        ;;
+      luks.key=*|rd.luks.key=*)
+        _tmpv=${_opt/#*luks.key=/}
+        if [[ ${_tmpv} =~ ^[[:alnum:]]{8}-[[:alnum:]]{4}-[[:alnum:]]{4}-[[:alnum:]]{4}-[[:alnum:]]{12}= ]]; then
+          local _tmpv_luksdev
+          _tmpv_luksdev=":UUID=${_tmpv/%=*/}"
+          _tmpv=${_tmpv/#${_tmpv_luksdev/#UUID=}=/}
+        fi
+        if [[ ${_tmpv} =~ : ]]; then
+          local _tmpv_keydev
+          _tmpv_keydev=":${_tmpv/#*:/}"
+        fi
+        _opt_r+=" rd.luks.key=${_tmpv/%:*/}${_tmpv_keydev}${_tmpv_luksdev}"
+        ;;
+      *)
+        eval "_UNUNIFIED${_name}+=' ${_opt}'"
+        _opt_r+=" ${_opt}"
+        ;;
+    esac
+  done
+  if [[ ${_opt_r} =~ [[:space:]]root=/dev/mapper/ ]]; then
+    local _tmpv_root_name
+    _tmpv_root_name=$(echo ${_opt_r} | sed -nE 's/.*\sroot=\/dev\/mapper\/([^\/[:space:]]+)\s.*/\1/p')
+    for _tmpv in ${_tmpv_luks_names}; do
+      if [[ ${_tmpv} == ${_tmpv_root_name} ]]; then
+        _opt_r="${_opt_r//root=\/dev\/mapper\/${_tmpv_root_name}/}"
+        _opt_r+=" root=UUID=$(lsblk -noUUID /dev/mapper/${_tmpv_root_name} | head -1)"
+      fi
+    done
+  fi
+  eval "${_name}='${_opt_r/#[[:space:]]/}'"
+}
+
 _GRUB_CMDLINE_LINUX=''
 _GRUB_CMDLINE_LINUX_DEFAULT=''
+__set_grub_cmdline() {
+  local _cmdline _cmdline_default _cmdline_array _cmdline_default_array
+  cp -aL /etc/default/grub "${NEWROOT}/etc/default/._old_grub"
+  _cmdline="$(. /etc/default/grub; echo ${GRUB_CMDLINE_LINUX})"
+  _cmdline="${_cmdline//quiet/}"
+  _cmdline="${_cmdline//splash/}"
+  _cmdline_array=( ${_cmdline//rhgb/} )
+  ___unify_cmdline_opts _GRUB_CMDLINE_LINUX ${_cmdline_array[@]}
+
+  _cmdline_default="$(. /etc/default/grub; echo ${GRUB_CMDLINE_LINUX_DEFAULT})"
+  _cmdline_default="${_cmdline_default//quiet/}"
+  _cmdline_default="${_cmdline_default//splash/}"
+  _cmdline_default_array=( ${_cmdline_default//rhgb/} )
+  ___unify_cmdline_opts _GRUB_CMDLINE_LINUX_DEFAULT ${_cmdline_default_array[@]}
+}
+
 _ready_chroot() {
   _log i "mounting necessaries ..."
   mount -t proc /proc "${NEWROOT}/proc"
@@ -325,12 +520,10 @@ _ready_chroot() {
   cp -aL /etc/hostname "${NEWROOT}/etc/" || \
     echo "gentoo" > "${NEWROOT}/etc/hostname"
   cp -aL /lib/modules "${NEWROOT}/lib/" || true
-  _GRUB_CMDLINE_LINUX=$(grep '^GRUB_CMDLINE_LINUX=' /etc/default/grub | cut -d'"' -f2)
-  _GRUB_CMDLINE_LINUX=${_GRUB_CMDLINE_LINUX//quiet/}
-  _GRUB_CMDLINE_LINUX=${_GRUB_CMDLINE_LINUX//splash/}
-  _GRUB_CMDLINE_LINUX_DEFAULT=$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub | cut -d'"' -f2)
-  _GRUB_CMDLINE_LINUX_DEFAULT=${_GRUB_CMDLINE_LINUX_DEFAULT//quiet/}
-  _GRUB_CMDLINE_LINUX_DEFAULT=${_GRUB_CMDLINE_LINUX_DEFAULT//splash/}
+  __analyze_fstab
+  __set_grub_cmdline
+  mount /boot || true
+  mount --bind /boot "${NEWROOT}/boot"
   local rootshadow=$(grep -E '^root:' /etc/shadow)
   local _newpass _newday
   if [[ ${rootshadow} =~ ^root:\*: ]]; then
@@ -349,17 +542,6 @@ _ready_chroot() {
     echo "GRUB_PLATFORMS=\"efi-64\"" >> "${NEWROOT}/etc/portage/make.conf"
   fi
   echo "GENTOO_MIRRORS=\"${MIRROR}\"" >> "${NEWROOT}/etc/portage/make.conf"
-  # kmod USE+zstd when it's Arch Linux
-  if [[ -n ${_is_archlinux} ]]; then
-    local _use_path="${NEWROOT}/etc/portage/package.use"
-    if [[ -f "${_use_path}" ]]; then
-      echo "sys-apps/kmod zstd" >>"${_use_path}"
-    else
-      mkdir -p "${_use_path}"
-      echo "sys-apps/kmod zstd" >>"${_use_path}/kmod"
-    fi
-    ONETIME_PKGS="sys-apps/kmod"
-  fi
 }
 
 _prepare_env() {
@@ -390,45 +572,82 @@ _chroot_exec() {
 }
 
 _prepare_bootloader() {
-  sed -i "/GRUB_CMDLINE_LINUX=\"\"/aGRUB_CMDLINE_LINUX=\"${_GRUB_CMDLINE_LINUX}\"" ${NEWROOT}/etc/default/grub
-  sed -i "/GRUB_CMDLINE_LINUX_DEFAULT=\"\"/aGRUB_CMDLINE_LINUX_DEFAULT=\"${_GRUB_CMDLINE_LINUX_DEFAULT}\"" ${NEWROOT}/etc/default/grub
+  sed -i "/GRUB_CMDLINE_LINUX=\"\"/aGRUB_CMDLINE_LINUX=\"${_GRUB_CMDLINE_LINUX}\"" \
+    ${NEWROOT}/etc/default/grub
+  sed -i "/GRUB_CMDLINE_LINUX_DEFAULT=\"\"/aGRUB_CMDLINE_LINUX_DEFAULT=\"${_GRUB_CMDLINE_LINUX_DEFAULT}\"" \
+    ${NEWROOT}/etc/default/grub
+
   local _grub_configed=0
   # find the boot device
-  mount /boot || true
   if [[ ${CPUARCH} == amd64 ]]; then
     local _bootdev
     if _bootdev=$(findmnt -no SOURCE /boot); then
-      _log i ">>> mount --bind /boot ${NEWROOT}/boot"
-      mount --bind /boot "${NEWROOT}/boot"
+      :
     else
       _bootdev=$(findmnt -no SOURCE /)
     fi
     _bootdev=$(lsblk -npsro TYPE,NAME "${_bootdev}" | awk '($1 == "disk") { print $2}')
     if [[ ! ${_bootdev} =~ ^/dev/mapper ]]; then
       _chroot_exec grub-install --target=i386-pc ${_bootdev} && \
-      _grub_configed=1 || true
+        _grub_configed=1 || true
+    else
+      _log w "Boot device is a mapper, skip i386-pc target grub installation."
     fi
   fi
   # prepare efi
   if [[ -n ${EFI_ENABLED} ]]; then
-    # fuzzy matching a possibile efi partition
-    local _efidevs="$(grep '[[:space:]]vfat[[:space:]]' /etc/fstab | grep -Ev '^#')"
-    if [[ $(<<<"${_efidevs}" wc -l) -gt 1 ]]; then
-      while read -r _ _efidev_m _; do
-        if [[ ${_efidev_m} =~ [eE][fF][iI] ]]; then
-          EFIMNT=${_efidev_m}
-          break
-        elif [[ ${_efidev_m} =~ [bB][oO][oO][tT] ]]; then
-          EFIMNT=${_efidev_m}
-        fi
-      done <<<"${_efidevs}"
+    local _bootcurrent _partuuid
+    while read -r _head _val; do
+      if [[ ${_head} == "BootCurrent:" ]]; then
+        _bootcurrent="${_val}"
+        continue
+      fi
+      if [[ ${_head} =~ Boot${_bootcurrent} ]]; then
+        _partuuid=$(echo "${_val}" | sed -nE '/HD\(/s/.*HD\([^,]+,[^,]+,([^,]+),.*/\1/p')
+        break
+      fi
+    done <<<"$(efibootmgr -v)"
+    if [[ ${_partuuid} != "" ]]; then
+      read -r EFIDEV EFIMNT <<<"$(lsblk -noPATH,MOUNTPOINT /dev/disk/by-partuuid/${_partuuid})"
+      if [[ ${EFIMNT} == "" ]]; then
+        EFIMNT=$(findmnt --fstab -nlt vfat -oTARGET -S${EFIDEV})
+      fi
     else
-      read -r _ EFIMNT _ <<<"${_efidevs}"
+      # hazily matching a possibile efi partition
+      _log w "matching a possibile efi partition hazily ..."
+      local _efidevs="$(findmnt --fstab -nlt vfat -o TARGET,SOURCE)"
+      if [[ $(<<<"${_efidevs}" wc -l) -gt 1 ]]; then
+        local _efidev_m_f
+        while read -r _efidev_m _efidev_d; do
+          case ${_efidev_m} in
+            *[eE][fF][iI]*)
+              EFIMNT=${_efidev_m}
+              EFIDEV=${_efidev_d}
+              _efidev_m_f=e
+              ;;
+            *[bB][oO][oO][tT]*)
+              if [[ ${_efidev_m_f} != "e" ]]; then
+                EFIMNT=${_efidev_m}
+                EFIDEV=${_efidev_d}
+                _efidev_m_f=b
+              fi
+              ;;
+            *)
+              if [[ ${_efidev_m_f} == "" ]]; then
+                EFIMNT=${_efidev_m}
+                EFIDEV=${_efidev_d}
+              fi
+              ;;
+          esac
+        done <<<"${_efidevs}"
+      else
+        read -r EFIMNT EFIDEV <<<"${_efidevs}"
+      fi
     fi
-    if [[ -n ${EFIMNT} ]] ;then
+    if [[ -n ${EFIDEV} ]]; then
       mkdir -p "${NEWROOT}${EFIMNT}"
-      _log i ">>> mount --bind ${EFIMNT} ${NEWROOT}${EFIMNT}"
-      mount --bind ${EFIMNT} "${NEWROOT}${EFIMNT}"
+      _log i ">>> mount ${EFIDEV} ${NEWROOT}${EFIMNT}"
+      mount ${EFIDEV} "${NEWROOT}${EFIMNT}"
       if [[ ${CPUARCH} == amd64 ]]; then
         local _target="x86_64-efi"
       else
@@ -438,22 +657,57 @@ _prepare_bootloader() {
       _chroot_exec grub-install --target=${_target} --efi-directory=${EFIMNT} --removable
       _grub_configed=1
     else
-      _log e "Cannot find efi path!"
+      _log e "Cannot find EFI partition!"
     fi
   fi
   if [[ ${_grub_configed} == 0 ]]; then
-    _fatal "Grub install failed! (LVM not supported yet)"
+    _fatal "Grub install failed!"
   fi
 }
 
 if [[ ! ${STAGE3} =~ systemd ]]; then
-  OPENRC_NETDEP="net-misc/netifrc"
+  EXTRA_DEPS+=" net-misc/netifrc"
 fi
 _chroot_exec emerge-webrsync
 
+_DRACUT_MODULES=
+_prepare_pkgs_configuration() {
+  if [[ ${_LUKS_ENABLED} == 1 ]]; then
+    if [[ ${STAGE3} =~ systemd ]]; then
+      echo 'sys-apps/systemd cryptsetup' >>"${NEWROOT}/etc/portage/package.use/cryptsetup"
+      ONETIME_PKGS+=" sys-apps/systemd"
+    fi
+    _DRACUT_MODULES+=" crypt"
+    echo 'sys-fs/cryptsetup -static-libs' >>"${NEWROOT}/etc/portage/package.use/cryptsetup"
+    EXTRA_DEPS+=" sys-fs/cryptsetup"
+  fi
+  if [[ ${_LVM_ENABLED} == 1 ]]; then
+    cp -aL /etc/lvm "${NEWROOT}/etc/"
+    _DRACUT_MODULES+=" lvm"
+    EXTRA_DEPS+=" sys-fs/lvm2"
+  fi
+  if [[ ${_BTRFS_ENABLED} == 1 ]]; then
+    _DRACUT_MODULES+=" btrfs"
+    EXTRA_DEPS+=" sys-fs/btrfs-progs"
+  fi
+}
+_prepare_pkgs_configuration
+
 [[ -z ${ONETIME_PKGS} ]] || \
   _chroot_exec emerge -1vj ${ONETIME_PKGS}
-_chroot_exec emerge -vnj sys-boot/grub net-misc/openssh ${OPENRC_NETDEP}
+
+# install necessary pkgs
+mkdir -p ${NEWROOT}/etc/portage/package.license
+echo 'sys-kernel/linux-firmware linux-fw-redistributable no-source-code' \
+  >${NEWROOT}/etc/portage/package.license/linux-firmware
+_chroot_exec emerge -vnj linux-firmware gentoo-kernel-bin sys-boot/grub net-misc/openssh ${EXTRA_DEPS}
+
+# regenerate initramfs
+if [[ -n ${_DRACUT_MODULES} ]]; then
+  echo "add_dracutmodules+=\"${_DRACUT_MODULES} \"" >>"${NEWROOT}/etc/dracut.conf.d/distro2gentoo.conf"
+  _chroot_exec emerge --config sys-kernel/gentoo-kernel-bin
+fi
+
 _prepare_bootloader
 
 _config_gentoo() {
@@ -493,6 +747,10 @@ DHCP=yes" >${NEWROOT}/etc/systemd/network/50-dhcp.network
     fi
     _chroot_exec systemctl enable sshd.service
     _chroot_exec systemctl enable systemd-networkd.service
+
+    if [[ ${_LVM_ENABLED} == 1 ]]; then
+      _chroot_exec systemctl enable lvm2-monitor.service
+    fi
   else
     if [[ ${_netproto} != dhcp ]]; then
       echo "config_${_netdev}=\"${_netip[@]} ${_netip6}\"" > ${NEWROOT}/etc/conf.d/net
@@ -503,6 +761,10 @@ DHCP=yes" >${NEWROOT}/etc/systemd/network/50-dhcp.network
     _chroot_exec rc-update add sshd default
     ln -s net.lo ${NEWROOT}/etc/init.d/net.${_netdev}
     _chroot_exec rc-update add net.${_netdev} default
+
+    if [[ ${_LVM_ENABLED} == 1 ]]; then
+      _chroot_exec rc-update add lvm boot
+    fi
   fi
   if [[ $(cat /root/.ssh/authorized_keys 2>/dev/null) =~ no-port-forwarding ]]; then
     echo > /root/.ssh/authorized_keys
@@ -511,9 +773,10 @@ DHCP=yes" >${NEWROOT}/etc/systemd/network/50-dhcp.network
 }
 _config_gentoo
 
+sync
 _log w "Deleting old system files ..."
 set -x
-find / \( ! -path '/' \
+"${NEWROOT}/lib64"/ld-*.so --library-path "${NEWROOT}/lib64" "${NEWROOT}/usr/bin/find" / \( ! -path '/' \
   -and ! -regex '/boot.*' \
   -and ! -regex '/dev.*' \
   -and ! -regex '/home.*' \
@@ -524,11 +787,12 @@ find / \( ! -path '/' \
   -and ! -regex '/selinux.*' \
   -and ! -regex '/tmp.*' \
   -and ! -regex "${EFIMNT:-/4f49e86d-275b-4766-94a9-8ea680d5e2de}.*" \
-  -and ! -regex "${NEWROOT}.*" \) -delete || true
+  -and ! -regex "${NEWROOT}.*" \) \
+  -delete || true
 set +x
 
 _magic_cp() {
-  echo ">>> Merging ${1} ..."
+  echo ">>> Merging /${1} ..."
   local _subdir
   if [[ ${1} =~ / ]]; then
     _subdir=${1%/*}
@@ -536,10 +800,6 @@ _magic_cp() {
   "${NEWROOT}/lib64"/ld-*.so --library-path "${NEWROOT}/lib64" "${NEWROOT}/bin/cp" -a "${NEWROOT}/${1}" /${_subdir} || true
 }
 _magic_cp bin
-if ! "${NEWROOT}/lib64"/ld-*.so --library-path "${NEWROOT}/lib64" "${NEWROOT}/bin/findmnt" /boot &>/dev/null; then
-  "${NEWROOT}/lib64"/ld-*.so --library-path "${NEWROOT}/lib64" "${NEWROOT}/bin/rm" -rf /boot/grub
-  _magic_cp boot/grub
-fi
 _magic_cp sbin
 _magic_cp etc
 _magic_cp lib
@@ -564,39 +824,32 @@ fi
 _log i "removing ${NEWROOT} ..."
 rm -rf ${NEWROOT} || true
 
-# patch grub-mkconfig when it's Arch Linux
-if [[ -n ${_is_archlinux} ]]; then
-  _log i ">>> patching /etc/grub.d/10_linux for Arch Linux kernel name"
-  sed -i.bak~ -E '/sed\s-e\s"s,\^\[\^0/s/\[\^0\-9\]\*/vmlinuz/' /etc/grub.d/10_linux
-fi
-_log i ">>> grub-mkconfig -o /boot/grub/grub.cfg"
+_log w ">>> grub-mkconfig -o /boot/grub/grub.cfg"
 grub-mkconfig -o /boot/grub/grub.cfg
-if [[ -n ${_is_archlinux} ]]; then
-  _log i ">>> restoring /etc/grub.d/10_linux"
-  mv /etc/grub.d/10_linux{.bak~,}
-fi
+
 _log i "Syncing ..."
 sync
 _log w "Finished!"
 echo
-_log w "    For some dist-specified kernels, when openrc init selected, you may need to install"
-_log w "      sys-kernel/gentoo-kernel-bin"
-_log w "    and update the grub.cfg and reload into the new kernel to make the cgroup fs accessible."
 echo
-_log n "  * normal users (if any) have been dropped (home directories is preserved)."
+(
+  . /etc/default/grub
+  _log n "        GRUB_CMDLINE_LINUX: '${GRUB_CMDLINE_LINUX}'"
+  _log n "GRUB_CMDLINE_LINUX_DEFAULT: '${GRUB_CMDLINE_LINUX_DEFAULT}'"
+)
+_log w "Unparsed         GRUB_CMDLINE_LINUX: '${_UNUNIFIED_GRUB_CMDLINE_LINUX/#[[:space:]]/}'"
+_log w "Unparsed GRUB_CMDLINE_LINUX_DEFAULT: '${_UNUNIFIED_GRUB_CMDLINE_LINUX_DEFAULT/#[[:space:]]/}'"
+_log w "The initramfs is generated by dracut by default, please check these opts."
 echo
-_log n "  * root password is preserved or set to 'distro2gentoo' if it's not set."
+_log n "  1. Normal users (if exist) have been dropped (but /home directories is preserved)."
 echo
-_log n "  * SSH server is enabled and will be listening on port 22,"
-_log n "    it can be connected by root user with password authentication."
+_log n "  2. Old kernels and modules are preserved but are not used by default."
 echo
-if [[ -n ${_is_archlinux} ]]; then
-  _log n "  If you want to continue using this Arch Linux kernel,"
-  _log n "  you'd better rename it with a more common name,"
-  _log n "    e.g.: vmlinuz-5.10.76-xxx initramfs-5.10.76-xxx.img"
-  _log n "  otherwise, Grub utils on Gentoo may not recognize the version correctly."
-  echo
-fi
+_log n "  3. 'root' user password is preserved or set to 'distro2gentoo' if it's not set."
+echo
+_log n "  4. SSH server is enabled and will be listening on port 22,"
+_log n "     it can be connected by root user with password authentication."
+echo
 _log n "  run:"
 _log n "    # . /etc/profile"
 _log n "  to enter the new environment."
@@ -608,6 +861,7 @@ echo
 
 WAIT=30
 _log n "wait to guarantee data synced for some file systems/special environment ..."
+_log n "  (CTRL-C is safe in most cases)"
 while [[ ${WAIT} -ge 0 ]]; do
   echo -en "\e[G\e[K  ${WAIT} "
   WAIT=$((${WAIT} -  1))
