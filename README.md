@@ -1,10 +1,16 @@
 ## A script that can convert a Linux distro to Gentoo Linux
 
-**This is a testing version!**
+```
+   **********************************
+   *** This is a testing version! ***
+   **********************************
+```
+
+#### How to run
 
 ```bash
-./distro2gentoo.sh
-# bash <(curl -sSfL 'https://gitlab.com/cwittlut/distro2gentoo/-/raw/dev/distro2gentoo.sh')
+wget 'https://gitlab.com/cwittlut/distro2gentoo/-/raw/dev/distro2gentoo.sh'
+bash distro2gentoo.sh
 ```
 
 #### Demo
