@@ -121,7 +121,7 @@ elif command -v curl >/dev/null; then
   _DOWNLOAD_CMD="curl -fL"
   _DOWNLOAD_CMD_QUIET="curl -sfL"
 else
-  _COMMANDS+=" wget"
+  _COMMANDS="wget"
 fi
 
 _cat() {
@@ -143,7 +143,7 @@ _download() {
 #_log i "Current system ID: ${_DISTRO_ID}"
 #echo
 
-_COMMANDS="awk bc findmnt gpg ip openssl wc xmllint tr sort"
+_COMMANDS+=" awk bc findmnt gpg ip openssl wc xmllint xz tr sort"
 
 declare -A -g PKG_xmllint
 PKG_xmllint[apt]="libxml2-utils"
@@ -162,6 +162,24 @@ PKG_gpg[zypper]="gpg2"
 PKG_gpg[urpmi]="gnupg2"
 PKG_gpg[opkg]="gnupg"
 PKG_gpg[xbps-install]="gnupg"
+
+declare -A -g PKG_wget
+PKG_wget[apt]="wget"
+PKG_wget[dnf]="wget"
+PKG_wget[pacman]="wget"
+PKG_wget[zypper]="wget"
+PKG_wget[urpmi]="wget"
+PKG_wget[opkg]="wget"
+PKG_wget[xbps-install]="wget"
+
+declare -A -g PKG_xz
+PKG_xz[apt]="xz-utils"
+PKG_xz[dnf]="xz"
+PKG_xz[pacman]="xz"
+PKG_xz[zypper]="xz"
+PKG_xz[urpmi]="xz"
+PKG_xz[opkg]="xz"
+PKG_xz[xbps-install]="xz"
 
 declare -A -g PKG_bc
 PKG_bc[apt]="bc"
@@ -209,6 +227,7 @@ _install_deps() {
     return ${_ret}
   }
 
+  _log i "Updating ca-certificates ..."
   __install_pkg cacerts || true
 
   _log i "Make sure commands '${_COMMANDS[@]}' are available."
@@ -359,8 +378,8 @@ _unpack_stage3() {
 }
 
 declare -a _FS_PATHS _FS_UUIDS _FS_MPS _FS_TYPES _FS_OPTS
-_LVM_ENABLED=0
-_LUKS_ENABLED=0
+_LVM_ENABLED=0   # _LVM_LVS _LVM_LVS_MP
+_LUKS_ENABLED=0  # _LUKS_PARTS _LUKS_PARTS_MP _LUKS_PARTS_PARENT
 _BTRFS_ENABLED=0
 __analyze_fstab() {
   while read -r _fs _mp _type _opts _; do
@@ -377,28 +396,38 @@ __analyze_fstab() {
       _FS_OPTS+=("${_opts}")
     fi
   done <"${NEWROOT}/etc/fstab"
+
+  local _sys_path_pattern='^(/|\[SWAP\])'
   while read -r _name _type _mp; do
     case ${_type} in
       crypt)
-        _LUKS_ENABLED=1
-        _LUKS_ROOTS+=("${_name}")
+        while read -r __mp; do
+          if [[ ${__mp} =~ ${_sys_path_pattern} ]]; then
+            _LUKS_ENABLED=1
+            _LUKS_PARTS+=("${_name}")
+            _LUKS_PARTS_MP+=("${_mp}")
+            _LUKS_PARTS_PARENT+=("$(lsblk -tpo NAME | grep -B1 "${_name}" | head -1 | cut -d'-' -f2)")
+            break
+          fi
+        done <<<"$(lsblk -lnoMOUNTPOINT ${_name})"
         ;;
       lvm)
-        _LVM_ENABLED=1
-        _LVM_LVS+=("${_name}")
-        ;;
-      part)
-        :
+        if [[ ${_mp} =~ ${_sys_path_pattern} ]]; then
+          _LVM_ENABLED=1
+          _LVM_LVS+=("${_name}")
+          _LVM_LVS_MP+=("${_mp}")
+        fi
         ;;
       *)
         :
         ;;
     esac
   done <<<"$(lsblk -lpnoNAME,TYPE,MOUNTPOINT)"
+
   local -i i
   for (( i = 0; i < ${#_FS_TYPES[@]}; ++i )); do
     if [[ ${_FS_TYPES[i]} == btrfs ]]; then
-      if [[ ${_FS_MPS[i]} =~ ^(/$|/usr|/lib|/var) ]]; then
+      if [[ ${_FS_MPS[i]} =~ ^/ ]]; then
         _BTRFS_ENABLED=1
       fi
     fi
@@ -410,6 +439,8 @@ __analyze_fstab() {
 #TODO more options
 ___unify_cmdline_opts() {
   local _name=${1} _opts _opt _opt_r _tmpv _tmpv_luks_name _tmpv_luks_names
+  local -a _luks_opts _lvm_vg_opts _lvm_lv_opts
+  local _uuid_pattern='[[:alnum:]]{8}-[[:alnum:]]{4}-[[:alnum:]]{4}-[[:alnum:]]{4}-[[:alnum:]]{12}'
   shift
   _opts=$(echo "$*" | tr ' ' '\n' | sort -du | tr '\n' ' ')
   set - ${_opts}
@@ -423,30 +454,20 @@ ___unify_cmdline_opts() {
         fi
         ;;
       dolvm)
-        while read -r _lv _vg _; do
-          if [[ ${_lv} != "LV" ]]; then
-            break;
-          elif [[ ${_opt_r} =~ rd\.lvm ]]; then
-            _log e "Unexpected error: 'rd.lvm*' and 'dolvm' exist at the same time."
-            break
-          else
-            continue
-          fi
-          _opt_r+=" rd.lvm.lv=${_vg}/${_lv}"
-        done <<<"$(lvdisplay -Co lv_name,vg_name)"
+        :
         ;;
       rd.lvm.vg=*)
-          _opt_r+=" ${_opt}"
+        _lvm_vg_opts+=( ${_opt} )
         ;;
       rd.lvm.lv=*)
-          _opt_r+=" ${_opt}"
+        _lvm_lv_opts+=( ${_opt} )
         ;;
       crypt_root=*)
-        if [[ ${_opt_r} =~ rd\.luks ]]; then
-          _log e "Unexpected error: 'rd.luks*' and 'crypt_root' exist at the same time."
-          continue
+        if [[ ${_opt} =~ ^crypt_root=UUID=${_uuid_pattern}$ ]]; then
+          _luks_opts+=( "rd.luks.uuid=${_opt/#crypt_root=UUID=/}" )
+        else
+          _log e "Unrecognized cmdline option: ${_opt}"
         fi
-        _opt_r+=" rd.luks.uuid=${_opt/#crypt_root=UUID=/}"
         ;;
       luks=*|rd.luks=*)
         _tmpv=${_opt/#*luks=/}
@@ -487,8 +508,8 @@ ___unify_cmdline_opts() {
       luks.uuid=*|rd.luks.uuid=*)
         _tmpv=${_opt/#*luks.uuid=/}
         _tmpv=${_tmpv/#luks-/}
-        if [[ ${_tmpv} =~ ^[[:alnum:]]{8}-[[:alnum:]]{4}-[[:alnum:]]{4}-[[:alnum:]]{4}-[[:alnum:]]{12}$ ]]; then
-          _opt_r+=" rd.luks.uuid=${_tmpv}"
+        if [[ ${_tmpv} =~ ^${_uuid_pattern}$ ]]; then
+          _luks_opts+=( "rd.luks.uuid=${_tmpv}" )
         else
           _log e "Unrecognized cmdline option: ${_opt}"
         fi
@@ -498,8 +519,8 @@ ___unify_cmdline_opts() {
         _tmpv=${_tmpv/#luks-/}
         _tmpv_luks_name=${_tmpv/#*=/}
         _tmpv=${_tmpv/%=*/}
-        if [[ ${_tmpv} =~ ^[[:alnum:]]{8}-[[:alnum:]]{4}-[[:alnum:]]{4}-[[:alnum:]]{4}-[[:alnum:]]{12}$ ]]; then
-          _opt_r+=" rd.luks.uuid=${_tmpv}"
+        if [[ ${_tmpv} =~ ^${_uuid_pattern}$ ]]; then
+          _luks_opts+=( "rd.luks.uuid=${_tmpv}" )
           if [[ -n ${_tmpv_luks_name} ]]; then
             _log w "Name '${_tmpv_luks_name}' of cmdline option '${_opt}' has been stripped."
             _tmpv_luks_names+=" ${_tmpv_luks_name}"
@@ -510,7 +531,7 @@ ___unify_cmdline_opts() {
         ;;
       luks.key=*|rd.luks.key=*)
         _tmpv=${_opt/#*luks.key=/}
-        if [[ ${_tmpv} =~ ^[[:alnum:]]{8}-[[:alnum:]]{4}-[[:alnum:]]{4}-[[:alnum:]]{4}-[[:alnum:]]{12}= ]]; then
+        if [[ ${_tmpv} =~ ^${_uuid_pattern}= ]]; then
           local _tmpv_luksdev
           _tmpv_luksdev=":UUID=${_tmpv/%=*/}"
           _tmpv=${_tmpv/#${_tmpv_luksdev/#UUID=}=/}
@@ -537,14 +558,66 @@ ___unify_cmdline_opts() {
       fi
     done
   fi
+
+  if [[ ${_name} == "_GRUB_CMDLINE_LINUX" ]]; then
+    if [[ ${_LVM_ENABLED} == 1 ]]; then
+      local _tmpv_lvm_lv _tmpv_lvm_vg _tmpv_lvm_lv_val
+      for (( i = 0; i < ${#_LVM_LVS[@]}; ++i )); do
+        local _this_is_set=0 _first_line=0
+        while read -r _tmpv_lvm_lv _tmpv_lvm_vg; do
+          if [[ ${_tmpv_lvm_lv} == "LV" ]]; then
+            _first_line=1
+            continue
+          elif [[ ${_first_line} == 0 ]]; then
+            _log e "Cannot get LV and VG for '${_LVM_LVS[i]}'"
+            break
+          fi
+          _tmpv_lvm_lv_val="rd.lvm.lv=${_tmpv_lvm_vg}/${_tmpv_lvm_lv}"
+        done <<<"$(lvdisplay -Co lv_name,vg_name ${_LVM_LVS[i]})"
+        for _lvm_lv_opt in ${_lvm_lv_opts[@]}; do
+          if [[ "${_lvm_lv_opt}" == "${_tmpv_lvm_lv_val}" ]]; then
+            _this_is_set=1
+          fi
+        done
+        if [[ ${_this_is_set} == 0 ]]; then
+          _lvm_lv_opts+=( "${_tmpv_lvm_lv_val}" )
+        fi
+      done
+    fi
+
+    if [[ ${_LUKS_ENABLED} == 1 ]]; then
+      local _tmpv_luks_uuid _tmpv_luks_uuid_val
+      for (( i = 0; i < ${#_LUKS_PARTS_PARENT[@]}; ++i )); do
+        local _this_is_set=0
+        read -r _tmpv_luks_uuid _ <<<"$(lsblk -tnoUUID,NAME ${_LUKS_PARTS_PARENT[i]} | head -1)"
+        _tmpv_luks_uuid_val="rd.luks.uuid=${_tmpv_luks_uuid}"
+        for _luks_opt in ${_luks_opts[@]}; do
+          if [[ "${_luks_opt}" == "${_tmpv_luks_uuid_val}" ]]; then
+            _this_is_set=1
+          fi
+        done
+        if [[ ${_this_is_set} == 0 ]]; then
+          _luks_opts+=("${_tmpv_luks_uuid_val}")
+        fi
+      done
+    fi
+
+  fi
+
+  for _opt in ${_lvm_lv_opts[@]} ${_lvm_vg_opts[@]} ${_luks_opts[@]}; do
+    _opt_r+=" ${_opt}"
+  done
+
   eval "${_name}='${_opt_r/#[[:space:]]/}'"
+
+  unset _name _opts _opt _opt_r _tmpv _tmpv_luks_name _tmpv_luks_names _luks_opts _lvm_vg_opts _lvm_lv_opts
 }
 
 _GRUB_CMDLINE_LINUX=''
 _GRUB_CMDLINE_LINUX_DEFAULT=''
 __set_grub_cmdline() {
   local _cmdline _cmdline_default _cmdline_array _cmdline_default_array
-  cp -aL /etc/default/grub "${NEWROOT}/etc/default/._old_grub"
+  cp -aL /etc/default/grub "${NEWROOT}/etc/default/._old_grub" || true
   _cmdline="$(. /etc/default/grub; echo ${GRUB_CMDLINE_LINUX})"
   _cmdline="${_cmdline//quiet/}"
   _cmdline="${_cmdline//splash/}"
@@ -754,15 +827,16 @@ _prepare_pkgs_configuration() {
   fi
 }
 _prepare_pkgs_configuration
+_CPUS=$(grep '^processor' /proc/cpuinfo | wc -l)
 
 [[ -z ${ONETIME_PKGS} ]] || \
-  _chroot_exec emerge -1vj ${ONETIME_PKGS}
+  _chroot_exec emerge -l ${_CPUS} -1vj ${ONETIME_PKGS}
 
 # install necessary pkgs
 mkdir -p ${NEWROOT}/etc/portage/package.license
 echo 'sys-kernel/linux-firmware linux-fw-redistributable no-source-code' \
   >${NEWROOT}/etc/portage/package.license/linux-firmware
-_chroot_exec emerge -vnj linux-firmware gentoo-kernel-bin sys-boot/grub net-misc/openssh ${EXTRA_DEPS}
+_chroot_exec emerge -l ${_CPUS} -vnj linux-firmware gentoo-kernel-bin sys-boot/grub net-misc/openssh ${EXTRA_DEPS}
 
 # regenerate initramfs
 if [[ -n ${_DRACUT_MODULES} ]]; then
