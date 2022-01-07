@@ -649,7 +649,6 @@ _ready_chroot() {
   __analyze_fstab
   __set_grub_cmdline
   mount /boot || true
-  mount --bind /boot "${NEWROOT}/boot"
   local rootshadow=$(grep -E '^root:' /etc/shadow)
   local _newpass _newday
   if [[ ${rootshadow} =~ ^root:\*: ]]; then
@@ -712,6 +711,8 @@ _prepare_bootloader() {
     ${NEWROOT}/etc/default/grub
   sed -i "/GRUB_DEFAULT=/aGRUB_DEFAULT=\"saved\"" ${NEWROOT}/etc/default/grub
 
+  cp -a "${NEWROOT}"/boot/* /boot/
+  mount --bind /boot "${NEWROOT}/boot"
   local _grub_configed=0
   # find the boot device
   if [[ ${CPUARCH} == amd64 ]]; then
@@ -830,21 +831,20 @@ _prepare_pkgs_configuration
 _CPUS=$(grep '^processor' /proc/cpuinfo | wc -l)
 
 [[ -z ${ONETIME_PKGS} ]] || \
-  _chroot_exec emerge -l ${_CPUS} -1vj ${ONETIME_PKGS}
+  _chroot_exec 'DONT_MOUNT_BOOT=1' emerge -l ${_CPUS} -1vj ${ONETIME_PKGS}
 
 # install necessary pkgs
 mkdir -p ${NEWROOT}/etc/portage/package.license
 echo 'sys-kernel/linux-firmware linux-fw-redistributable no-source-code' \
   >${NEWROOT}/etc/portage/package.license/linux-firmware
-_chroot_exec emerge -l ${_CPUS} -vnj linux-firmware gentoo-kernel-bin sys-boot/grub net-misc/openssh ${EXTRA_DEPS}
+_chroot_exec 'DONT_MOUNT_BOOT=1' emerge -l ${_CPUS} -vnj \
+  linux-firmware gentoo-kernel-bin sys-boot/grub net-misc/openssh ${EXTRA_DEPS}
 
 # regenerate initramfs
 if [[ -n ${_DRACUT_MODULES} ]]; then
   echo "add_dracutmodules+=\"${_DRACUT_MODULES} \"" >>"${NEWROOT}/etc/dracut.conf.d/distro2gentoo.conf"
-  _chroot_exec emerge --config sys-kernel/gentoo-kernel-bin
+  _chroot_exec 'DONT_MOUNT_BOOT=1' emerge --config sys-kernel/gentoo-kernel-bin
 fi
-
-_prepare_bootloader
 
 _config_gentoo() {
   sed -Ei -e '/PermitRootLogin/s/^[#[:space:]]*PermitRootLogin.*/PermitRootLogin yes/' \
@@ -909,6 +909,20 @@ DHCP=yes" >${NEWROOT}/etc/systemd/network/50-dhcp.network
 }
 _config_gentoo
 
+WAIT=5
+echo
+echo
+_log n "Following actions will affect the real system."
+echo -en "Starting in: \e[33m\e[1m"
+while [[ ${WAIT} -gt 0 ]]; do
+  echo -en "${WAIT} "
+  WAIT=$((${WAIT} -  1))
+  sleep 1
+done
+echo -e "\e[0m"
+
+_log w "Installing Grub ..."
+_prepare_bootloader
 sync
 _log w "Deleting old system files ..."
 set -x
