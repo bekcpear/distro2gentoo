@@ -377,25 +377,17 @@ _unpack_stage3() {
   popd
 }
 
-declare -a _FS_PATHS _FS_UUIDS _FS_MPS _FS_TYPES _FS_OPTS
+declare -a _FS_SOURCES _FS_MPS _FS_TYPES _FS_OPTS
 _LVM_ENABLED=0   # _LVM_LVS _LVM_LVS_MP
 _LUKS_ENABLED=0  # _LUKS_PARTS _LUKS_PARTS_MP _LUKS_PARTS_PARENT
-_BTRFS_ENABLED=0
+_BTRFS_ENABLED=0 # _BTRFS_MP _BTRFS_SUBVOL _BTRFS_OPT _BTRFS_SUBVOL_ROOTFS
 __analyze_fstab() {
-  while read -r _fs _mp _type _opts _; do
-    if [[ ! ${_fs} =~ ^# ]]; then
-      if [[ ${_fs} =~ ^UUID ]]; then
-        _FS_UUIDS+=("${_fs}")
-        _FS_PATHS+=("UNSET")
-      else
-        _FS_UUIDS+=("UNSET")
-        _FS_PATHS+=("${_fs}")
-      fi
-      _FS_MPS+=("${_mp}")
-      _FS_TYPES+=("${_type}")
-      _FS_OPTS+=("${_opts}")
-    fi
-  done <"${NEWROOT}/etc/fstab"
+  while read -r _source _mp _type _opts _; do
+    _FS_SOURCES+=("${_source}")
+    _FS_MPS+=("${_mp}")
+    _FS_TYPES+=("${_type}")
+    _FS_OPTS+=("${_opts}")
+  done <<<"$(findmnt --noheadings -loSOURCE,TARGET,FSTYPE,OPTIONS)"
 
   local _sys_path_pattern='^(/|\[SWAP\])'
   while read -r _name _type _mp; do
@@ -425,10 +417,18 @@ __analyze_fstab() {
   done <<<"$(lsblk -lpnoNAME,TYPE,MOUNTPOINT)"
 
   local -i i
+  local __subvol
   for (( i = 0; i < ${#_FS_TYPES[@]}; ++i )); do
     if [[ ${_FS_TYPES[i]} == btrfs ]]; then
       if [[ ${_FS_MPS[i]} =~ ^/ ]]; then
         _BTRFS_ENABLED=1
+        _BTRFS_MP+=("${_FS_MPS[i]}")
+        __subvol="$(<<<${_FS_SOURCES[i]} sed -nE 's/^[^[]+\[([^]]+)\]/\1/p')"
+        _BTRFS_SUBVOL+=("${__subvol}")
+        _BTRFS_OPT+=("${_FS_OPTS[i]}")
+        if [[ ${_FS_MPS[i]} == / ]]; then
+          _BTRFS_SUBVOL_ROOTFS="${__subvol}"
+        fi
       fi
     fi
   done
@@ -620,12 +620,14 @@ __set_grub_cmdline() {
   cp -aL /etc/default/grub "${NEWROOT}/etc/default/._old_grub" || true
   _cmdline="$(. /etc/default/grub; echo ${GRUB_CMDLINE_LINUX})"
   _cmdline="${_cmdline//quiet/}"
+  _cmdline="${_cmdline//splash=silent/}"
   _cmdline="${_cmdline//splash/}"
   _cmdline_array=( ${_cmdline//rhgb/} )
   ___unify_cmdline_opts _GRUB_CMDLINE_LINUX ${_cmdline_array[@]}
 
   _cmdline_default="$(. /etc/default/grub; echo ${GRUB_CMDLINE_LINUX_DEFAULT})"
   _cmdline_default="${_cmdline_default//quiet/}"
+  _cmdline_default="${_cmdline_default//splash=silent/}"
   _cmdline_default="${_cmdline_default//splash/}"
   _cmdline_default_array=( ${_cmdline_default//rhgb/} )
   ___unify_cmdline_opts _GRUB_CMDLINE_LINUX_DEFAULT ${_cmdline_default_array[@]}
@@ -924,6 +926,39 @@ echo -e "\e[0m"
 _log w "Installing Grub ..."
 _prepare_bootloader
 sync
+
+if [[ ${_BTRFS_ENABLED} == 1 ]]; then
+  # detect btrfs readonly subvol
+  while read -r _ _ _ _ _ _ _ _ __subvol_path; do
+    for (( i = 0; i < ${#_BTRFS_SUBVOL[@]}; ++i )); do
+      __subvol_path=${__subvol_path#<FS_TREE>}
+      __subvol_path_remaining=${__subvol_path#${_BTRFS_SUBVOL[i]}}
+      if [[ ${__subvol_path_remaining} != ${__subvol_path} ]]; then
+        __subvol_path_readonlys+=("${_BTRFS_MP[i]}${__subvol_path_remaining}")
+      fi
+    done
+  done <<<"$(btrfs subvolume list -ar /)"
+  for __subvol_path_readonly in ${__subvol_path_readonlys[@]}; do
+    _log w "'${__subvol_path_readonly}' is a readonly subvolume."
+    __EXCLUDE_READONLY_SUBVOL_PATH+=" -and ! -regex ${__subvol_path_readonly}.*"
+  done
+
+  # tune btrfs rootfs opts in /etc/fstab
+  if [[ -n ${_BTRFS_SUBVOL_ROOTFS} ]]; then
+    __btrfs_fstab_rootfs_subvol_sed_pattern="/subvol/!s/^([[:space:]]*[^#][^[:space:]]+[[:space:]]+\/[[:space:]]+btrfs[[:space:]]+[^[:space:]]+)[[:space:]]+([[:digit:]].+)$/\1,subvol=${_BTRFS_SUBVOL_ROOTFS//\//\\\/}  \2/"
+    _log i ">>> sed -Ei '${__btrfs_fstab_rootfs_subvol_sed_pattern}' ${NEWROOT}/etc/fstab"
+    eval "sed -Ei '${__btrfs_fstab_rootfs_subvol_sed_pattern}' ${NEWROOT}/etc/fstab"
+
+    for (( i = 0; i < ${#_BTRFS_SUBVOL[@]}; ++i )); do
+      __btrfs_subvol_rootfs_remaining=${_BTRFS_SUBVOL_ROOTFS#${_BTRFS_SUBVOL[i]}}
+      if [[ ${__btrfs_subvol_rootfs_remaining} != ${_BTRFS_SUBVOL_ROOTFS} ]]; then
+        __EXCLUDE_ROOTFS_SUBVOL_PATH=" -and ! -regex ${_BTRFS_MP[i]}${__btrfs_subvol_rootfs_remaining}.*"
+      fi
+    done
+
+  fi
+fi
+
 _log w "Deleting old system files ..."
 set -x
 "${NEWROOT}/lib64"/ld-*.so --library-path "${NEWROOT}/lib64" "${NEWROOT}/usr/bin/find" / \( ! -path '/' \
@@ -936,6 +971,8 @@ set -x
   -and ! -regex '/sys.*' \
   -and ! -regex '/selinux.*' \
   -and ! -regex '/tmp.*' \
+  ${__EXCLUDE_ROOTFS_SUBVOL_PATH} \
+  ${__EXCLUDE_READONLY_SUBVOL_PATH} \
   -and ! -regex "${EFIMNT:-/4f49e86d-275b-4766-94a9-8ea680d5e2de}.*" \
   -and ! -regex "${NEWROOT}.*" \) \
   -delete || true
