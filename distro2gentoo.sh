@@ -85,6 +85,65 @@ _fatal() {
   exit ${exit_code}
 }
 
+
+# experimental binhost enabled or not
+_BINHOST_ENABLED=0
+
+_show_help() {
+  echo "
+Usage: distro2gentoo [<options>]
+
+options:
+
+  -b, --use-binhost       Enable the **experimental** binhost when installing Gentoo, refer to:
+                          https://dilfridge.blogspot.com/2021/09/experimental-binary-gentoo-package.html
+
+  -h, --help              Show this help
+"
+}
+
+_parse_params() {
+  set +e
+  unset GETOPT_COMPATIBLE
+  getopt -T
+  if [[ ${?} != 4 ]]; then
+    fatalerr "The command 'getopt' of Linux version is necessory to parse parameters."
+  fi
+  local _args
+  _args=$(getopt -o 'bh' -l 'use-binhost,help' -n 'distro2gentoo' -- "$@")
+  if [[ ${?} != 0 ]]; then
+    _show_help
+    exit 1
+  fi
+  set -e
+
+  # parse arguments
+  eval "set -- ${_args}"
+  while true; do
+    case "${1}" in
+      -b|--use-binhost)
+        if [[ ${CPUARCH} != "amd64" ]]; then
+          _log e "The experimental binhost only supports amd64 architecture now, ignore '${1}'!"
+        else
+          _BINHOST_ENABLED=1
+        fi
+        shift
+        ;;
+      -h|--help)
+        _show_help
+        exit 0
+        ;;
+      --)
+        shift
+        break
+        ;;
+      *)
+        fatalerr "unknow error"
+        ;;
+    esac
+  done
+}
+
 _pre_check() {
   local _ret=000
   # check root
@@ -671,12 +730,33 @@ _ready_chroot() {
   echo "GENTOO_MIRRORS=\"${MIRROR}\"" >> "${NEWROOT}/etc/portage/make.conf"
 }
 
+_first_tip() {
+  echo
+  _log n "    1. This script won't format disks,"
+  _log n "    2. will remove all mounted data excepts /home, /root,"
+  _log n "                                            kernels & modules"
+  echo
+  _log n "           *** BACKUP YOUR DATA!!! ***"
+  echo
+  WAIT=5
+  echo -en "Starting in: \e[33m\e[1m"
+  while [[ ${WAIT} -gt 0 ]]; do
+    echo -en "${WAIT} "
+    WAIT=$((${WAIT} -  1))
+    sleep 1
+  done
+  echo -e "\e[0m"
+}
+
+CPUARCH=$(uname -m)
+CPUARCH=${CPUARCH/x86_64/amd64}
+CPUARCH=${CPUARCH/aarch64/arm64}
+_parse_params "${@}"
+
 _prepare_env() {
-  CPUARCH=$(uname -m)
-  CPUARCH=${CPUARCH/x86_64/amd64}
-  CPUARCH=${CPUARCH/aarch64/arm64}
   NEWROOT="/root.d2g.${CPUARCH}"
   _pre_check
+  _first_tip
   mkdir -p "${NEWROOT}"
   _install_deps
   _get_mirror
@@ -684,21 +764,6 @@ _prepare_env() {
   _unpack_stage3
   _ready_chroot
 }
-echo
-_log n "    1. This script won't format disks,"
-_log n "    2. will remove all mounted data excepts /home, /root,"
-_log n "                                            kernels & modules"
-echo
-_log n "           *** BACKUP YOUR DATA!!! ***"
-echo
-WAIT=5
-echo -en "Starting in: \e[33m\e[1m"
-while [[ ${WAIT} -gt 0 ]]; do
-  echo -en "${WAIT} "
-  WAIT=$((${WAIT} -  1))
-  sleep 1
-done
-echo -e "\e[0m"
 _prepare_env
 
 _chroot_exec() {
@@ -831,18 +896,27 @@ _prepare_pkgs_configuration() {
     _DRACUT_MODULES+=" btrfs"
     EXTRA_DEPS+=" sys-fs/btrfs-progs"
   fi
+  if [[ ${_BINHOST_ENABLED} == 1 ]]; then
+    local _binhost_sync_uri="${MIRROR%/}/experimental/${CPUARCH}/binpkg/default/linux/17.1/x86-64/"
+    echo "[binhost]
+priority = 9999
+sync-uri = ${_binhost_sync_uri}
+" >"${NEWROOT}/etc/portage/binrepos.conf"
+    _log w "The binhost sync-uri is set to '${_binhost_sync_uri}'"
+    _BINHOST_ARGS="--binpkg-changed-deps=y --binpkg-respect-use=y --getbinpkg=y"
+  fi
 }
 _prepare_pkgs_configuration
 _CPUS=$(grep '^processor' /proc/cpuinfo | wc -l)
 
 [[ -z ${ONETIME_PKGS} ]] || \
-  _chroot_exec 'DONT_MOUNT_BOOT=1' emerge -l ${_CPUS} -1vj ${ONETIME_PKGS}
+  _chroot_exec 'DONT_MOUNT_BOOT=1' emerge -l ${_CPUS} -1vj ${_BINHOST_ARGS} ${ONETIME_PKGS}
 
 # install necessary pkgs
 mkdir -p ${NEWROOT}/etc/portage/package.license
 echo 'sys-kernel/linux-firmware linux-fw-redistributable no-source-code' \
   >${NEWROOT}/etc/portage/package.license/linux-firmware
-_chroot_exec 'DONT_MOUNT_BOOT=1' emerge -l ${_CPUS} -vnj \
+_chroot_exec 'DONT_MOUNT_BOOT=1' emerge -l ${_CPUS} -vnj ${_BINHOST_ARGS} \
   linux-firmware gentoo-kernel-bin sys-boot/grub net-misc/openssh ${EXTRA_DEPS}
 
 # regenerate initramfs
