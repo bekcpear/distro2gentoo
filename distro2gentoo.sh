@@ -747,9 +747,6 @@ _prepare_bootloader() {
     done <<<"$(efibootmgr -v)"
     if [[ ${_partuuid} != "" ]]; then
       read -r EFIDEV EFIMNT <<<"$(lsblk -noPATH,MOUNTPOINT /dev/disk/by-partuuid/${_partuuid})"
-      if [[ ${EFIMNT} == "" ]]; then
-        EFIMNT=$(findmnt --fstab -nlt vfat -oTARGET -S${EFIDEV})
-      fi
     else
       # hazily matching a possibile efi partition
       _log w "matching a possibile efi partition hazily ..."
@@ -783,6 +780,12 @@ _prepare_bootloader() {
       fi
     fi
     if [[ -n ${EFIDEV} ]]; then
+      if [[ ${EFIMNT} == "" ]]; then
+        if ! EFIMNT=$(findmnt --fstab -nlt vfat -oTARGET -S${EFIDEV}); then
+          # set a default efi mount point
+          EFIMNT="/boot/efi_partition"
+        fi
+      fi
       mkdir -p "${NEWROOT}${EFIMNT}"
       _log i ">>> mount ${EFIDEV} ${NEWROOT}${EFIMNT}"
       mount ${EFIDEV} "${NEWROOT}${EFIMNT}"
