@@ -9,6 +9,17 @@
 #### How to run
 
 ```bash
+#
+# Usage: distro2gentoo [<options>]
+#
+# options:
+#
+#   -b, --use-binhost       Enable the **experimental** binhost when installing Gentoo, refer to:
+#                           https://dilfridge.blogspot.com/2021/09/experimental-binary-gentoo-package.html
+#
+#   -h, --help              Show this help
+#
+
 wget 'https://gitlab.com/cwittlut/distro2gentoo/-/raw/dev/distro2gentoo.sh'
 bash distro2gentoo.sh
 ```
