@@ -397,35 +397,18 @@ _get_stage3() {
   _log i "selected stage3: ${_stages[${_selected}]}"
   _log i "Importing release keys ..."
   gpg --quiet --keyserver hkps://keys.gentoo.org --recv-key 13EBBDBEDE7A12775DFDB1BABB572E0E2D182910
-  # prepare signed DIGESTS
-  DIGESTS="/${_stages[${_selected}]}.DIGESTS.asc"
-  if [[ ! -e ${DIGESTS} ]]; then
-    eval "_download '${_list%/*}/${_stages_path[${_selected}]}.DIGESTS.asc' '${DIGESTS}'"
+  # prepare signature
+  ASC="/${_stages[${_selected}]}.asc"
+  if [[ ! -e ${ASC} ]]; then
+    eval "_download '${_list%/*}/${_stages_path[${_selected}]}.asc' '${ASC}'"
   fi
-  _log i "Checking ${DIGESTS} ..."
-  gpg --verify ${DIGESTS} || _fatal "Verify signature failed!"
-  # get sha512sum of the stage3 tarball
-  local _sha512sum
-  while read -r __sha512sum _; do
-    if [[ ${__sha512sum} != "#" ]]; then
-      _sha512sum=${__sha512sum}
-      break
-    fi
-  done <<<"$(grep -A1 'SHA512' ${DIGESTS})"
   # prepare stage3 tarball
   STAGE3="/${_stages[${_selected}]}"
   if [[ ! -e ${STAGE3} ]]; then
     eval "_download '${_list%/*}/${_stages_path[${_selected}]}' '${STAGE3}'"
   fi
-  local _real_sha512sum
-  _real_sha512sum=$(sha512sum ${STAGE3} | cut -d' ' -f1)
-  if [[ ${_sha512sum} != ${_real_sha512sum} ]]; then
-    _log e "Unmatched sha512sum of ${STAGE3}"
-    _log e "  recorded: ${_sha512sum}"
-    _log e "      real: ${_real_sha512sum}"
-    _fatal "Abort!"
-  fi
-  _log i "Matched sha512sum of ${STAGE3}"
+  _log i "Checking ${ASC} ..."
+  gpg --verify ${ASC} || _fatal "Verify signature failed!"
   _log i "Stage3 tarball has been stored as '${STAGE3}'."
 }
 
@@ -777,6 +760,7 @@ _prepare_bootloader() {
   sed -i "/GRUB_CMDLINE_LINUX_DEFAULT=\"\"/aGRUB_CMDLINE_LINUX_DEFAULT=\"${_GRUB_CMDLINE_LINUX_DEFAULT}\"" \
     ${NEWROOT}/etc/default/grub
   sed -i "/GRUB_DEFAULT=/aGRUB_DEFAULT=\"saved\"" ${NEWROOT}/etc/default/grub
+  echo $'\n'"GRUB_DISABLE_OS_PROBER=false" >>${NEWROOT}/etc/default/grub
 
   cp -a "${NEWROOT}"/boot/* /boot/
   mount --bind /boot "${NEWROOT}/boot"
@@ -917,7 +901,7 @@ mkdir -p ${NEWROOT}/etc/portage/package.license
 echo 'sys-kernel/linux-firmware linux-fw-redistributable no-source-code' \
   >${NEWROOT}/etc/portage/package.license/linux-firmware
 _chroot_exec 'DONT_MOUNT_BOOT=1' emerge -l ${_CPUS} -vnj ${_BINHOST_ARGS} \
-  linux-firmware gentoo-kernel-bin sys-boot/grub net-misc/openssh ${EXTRA_DEPS}
+  linux-firmware gentoo-kernel-bin sys-boot/grub sys-boot/os-prober net-misc/openssh ${EXTRA_DEPS}
 
 # regenerate initramfs
 if [[ -n ${_DRACUT_MODULES} ]]; then
