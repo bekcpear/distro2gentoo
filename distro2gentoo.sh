@@ -401,7 +401,13 @@ _get_stage3() {
   done
   _log i "selected stage3: ${_stages[${_selected}]}"
   _log i "Importing release keys ..."
-  gpg --quiet --keyserver hkps://keys.gentoo.org --recv-key 13EBBDBEDE7A12775DFDB1BABB572E0E2D182910
+  _GET_RELEASE_KEY="gpg --quiet --keyserver hkps://keys.gentoo.org --recv-key 13EBBDBEDE7A12775DFDB1BABB572E0E2D182910"
+  ${_GET_RELEASE_KEY} || \
+    {
+      _log i "try again ..."
+      pkill dirmngr || true
+      ${_GET_RELEASE_KEY}
+    }
   # prepare signature
   ASC="/${_stages[${_selected}]}.asc"
   if [[ ! -e ${ASC} ]]; then
