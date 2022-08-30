@@ -265,12 +265,14 @@ _install_deps() {
     local -i _ret=0
     local __command=${1}
     if command -v apt >/dev/null; then
+      apt-get update
       eval "apt -y install \${PKG_${__command}[apt]}" || _ret=1
     elif command -v dnf >/dev/null; then
       eval "dnf -y install \${PKG_${__command}[dnf]}" || _ret=1
     elif command -v yum >/dev/null; then
       eval "yum -y install \${PKG_${__command}[dnf]}" || _ret=1
     elif command -v pacman >/dev/null; then
+      pacman -Syy
       eval "pacman --noconfirm -S \${PKG_${__command}[pacman]}" || _ret=1
     elif command -v zypper >/dev/null; then # SUSE
       eval "zypper install -y \${PKG_${__command}[zypper]}" || _ret=1
@@ -893,14 +895,17 @@ sync-uri = ${_binhost_sync_uri}
 _prepare_pkgs_configuration
 _CPUS=$(grep '^processor' /proc/cpuinfo | wc -l)
 
+_EMERGE_OPTS="--autounmask-write --autounmask-continue -vj"
+
 [[ -z ${ONETIME_PKGS} ]] || \
-  _chroot_exec 'DONT_MOUNT_BOOT=1' emerge -l ${_CPUS} -1vj ${_BINHOST_ARGS} ${ONETIME_PKGS}
+  _chroot_exec 'DONT_MOUNT_BOOT=1' emerge -l ${_CPUS} -1 ${_EMERGE_OPTS} ${_BINHOST_ARGS} ${ONETIME_PKGS}
 
 # install necessary pkgs
 mkdir -p ${NEWROOT}/etc/portage/package.license
 echo 'sys-kernel/linux-firmware linux-fw-redistributable no-source-code' \
   >${NEWROOT}/etc/portage/package.license/linux-firmware
-_chroot_exec 'DONT_MOUNT_BOOT=1' emerge -l ${_CPUS} -vnj ${_BINHOST_ARGS} \
+echo 'sys-boot/grub mount' >>"${NEWROOT}/etc/portage/package.use/bootloader"
+_chroot_exec 'DONT_MOUNT_BOOT=1' emerge -l ${_CPUS} -n ${_EMERGE_OPTS} ${_BINHOST_ARGS} \
   linux-firmware gentoo-kernel-bin sys-boot/grub sys-boot/os-prober net-misc/openssh ${EXTRA_DEPS}
 
 # regenerate initramfs
