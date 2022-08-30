@@ -160,7 +160,10 @@ _pre_check() {
       _log e "This script only tested for amd64/arm64 arch now!"
       ;;&
     *1)
-      _log e "New root path '${NEWROOT}' exists, umount it's subdirs and remove it first!"
+      _log e "New root path '${NEWROOT}' exists"
+      _log e "**umount** it's subdirs and remove it first."
+      _log e "  # umount -R ${NEWROOT}"
+      _log e "  # rm -rf ${NEWROOT}"
       ;;
   esac
   if [[ ${_ret} != 000 ]]; then
