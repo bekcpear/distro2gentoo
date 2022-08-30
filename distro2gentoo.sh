@@ -980,6 +980,14 @@ DHCP=yes" >${NEWROOT}/etc/systemd/network/50-dhcp.network
 }
 _config_gentoo
 
+########################################
+########################################
+########################################
+_LD_SO=$(ls -d ${NEWROOT}/lib64/ld-linux-*.so*)
+if [[ ! -x ${_LD_SO} ]] || [[ $(${_LD_SO} --version | head -1 | cut -d' ' -f1) != "ld.so" ]]; then
+  _fatal "cannot find ld.so from ${NEWROOT}/lib64/ld-linux-*.so*"
+fi
+
 WAIT=5
 echo
 echo
@@ -1030,7 +1038,7 @@ fi
 
 _log w "Deleting old system files ..."
 set -x
-"${NEWROOT}/lib64"/ld-*.so --library-path "${NEWROOT}/lib64" "${NEWROOT}/usr/bin/find" / \( ! -path '/' \
+${_LD_SO} --library-path "${NEWROOT}/lib64" "${NEWROOT}/usr/bin/find" / \( ! -path '/' \
   -and ! -regex '/boot.*' \
   -and ! -regex '/dev.*' \
   -and ! -regex '/home.*' \
@@ -1053,7 +1061,7 @@ _magic_cp() {
   if [[ ${1} =~ / ]]; then
     _subdir=${1%/*}
   fi
-  "${NEWROOT}/lib64"/ld-*.so --library-path "${NEWROOT}/lib64" "${NEWROOT}/bin/cp" -a "${NEWROOT}/${1}" /${_subdir} || true
+  ${_LD_SO} --library-path "${NEWROOT}/lib64" "${NEWROOT}/bin/cp" -a "${NEWROOT}/${1}" /${_subdir} || true
 }
 _magic_cp bin
 _magic_cp sbin
