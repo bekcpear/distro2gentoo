@@ -309,7 +309,7 @@ _get_mirror() {
   set +e
   local _country_code=$(_cat 'https://ip2c.org/self' | cut -d';' -f2)
   local _mirrors
-  if [[ $(xmllint --version 2>&1 | head -1 | cut -d' ' -f5) -ge 20909 ]]; then
+  if [[ $(xmllint --version 2>&1 | head -1 | cut -d' ' -f5 | cut -d'-' -f1) -ge 20909 ]]; then
     eval "_mirrors=\$(_cat 'https://api.gentoo.org/mirrors/distfiles.xml' | \
       xmllint --xpath '/mirrors/mirrorgroup[@country=\"${_country_code}\"]/mirror/uri/text()' -)"
   else
