@@ -162,8 +162,8 @@ _pre_check() {
     *1)
       _log e "New root path '${NEWROOT}' exists"
       _log e "**umount** it's subdirs and remove it first."
-      _log e "  # umount -R ${NEWROOT}"
-      _log e "  # rm -rf ${NEWROOT}"
+      _log e "  # umount -R ${NEWROOT}/*"
+      _log e "  # rm -r ${NEWROOT}"
       ;;
   esac
   if [[ ${_ret} != 000 ]]; then
@@ -1140,6 +1140,8 @@ _log n "    # . /etc/profile"
 _log n "  to enter the new environment."
 echo
 _log n "  reboot:"
+_log n "    # reboot -f"
+_log n "    or"
 _log n "    # echo b >/proc/sysrq-trigger"
 _log n "  and Enjoy Gentoo!"
 echo
