@@ -919,6 +919,7 @@ _chroot_exec 'DONT_MOUNT_BOOT=1' emerge -l ${_CPUS} -n ${_EMERGE_OPTS} ${_BINHOS
 
 # regenerate initramfs
 if [[ -n ${_DRACUT_MODULES} ]]; then
+  mkdir -p "${NEWROOT}/etc/dracut.conf.d"
   echo "add_dracutmodules+=\"${_DRACUT_MODULES} \"" >>"${NEWROOT}/etc/dracut.conf.d/distro2gentoo.conf"
   _chroot_exec 'DONT_MOUNT_BOOT=1' emerge --config sys-kernel/gentoo-kernel-bin
 fi
@@ -1250,7 +1251,7 @@ if [[ ${_BTRFS_ENABLED} == 1 ]]; then
   done <<<"$(btrfs subvolume list -ar /)"
   for __subvol_path_readonly in ${__subvol_path_readonlys[@]}; do
     _log w "'${__subvol_path_readonly}' is a readonly subvolume."
-    __EXCLUDE_READONLY_SUBVOL_PATH+=" -and ! -regex ${__subvol_path_readonly}.*"
+    __EXCLUDE_READONLY_SUBVOL_PATH+=" -and ! -regex '${__subvol_path_readonly}.*'"
   done
 
   # tune btrfs rootfs opts in /etc/fstab
@@ -1259,10 +1260,14 @@ if [[ ${_BTRFS_ENABLED} == 1 ]]; then
     _log i ">>> sed -Ei '${__btrfs_fstab_rootfs_subvol_sed_pattern}' ${NEWROOT}/etc/fstab"
     eval "sed -Ei '${__btrfs_fstab_rootfs_subvol_sed_pattern}' ${NEWROOT}/etc/fstab"
 
+    # keep the contents within the root subvol but with different path
     for (( i = 0; i < ${#_BTRFS_SUBVOL[@]}; ++i )); do
+      if [[ ${_BTRFS_SUBVOL_ROOTFS} == ${_BTRFS_SUBVOL[i]} ]]; then
+        continue
+      fi
       __btrfs_subvol_rootfs_remaining=${_BTRFS_SUBVOL_ROOTFS#${_BTRFS_SUBVOL[i]}}
       if [[ ${__btrfs_subvol_rootfs_remaining} != ${_BTRFS_SUBVOL_ROOTFS} ]]; then
-        __EXCLUDE_ROOTFS_SUBVOL_PATH=" -and ! -regex ${_BTRFS_MP[i]}${__btrfs_subvol_rootfs_remaining}.*"
+        __EXCLUDE_ROOTFS_SUBVOL_PATH=" -and ! -regex '${_BTRFS_MP[i]}${__btrfs_subvol_rootfs_remaining}.*'"
       fi
     done
 
@@ -1288,13 +1293,13 @@ ${_LD_SO} --library-path "${NEWROOT}/lib64" "${NEWROOT}/usr/bin/find" / \( ! -pa
   -delete || true
 set +x
 
+${_LD_SO} --library-path "${NEWROOT}/lib64" "${NEWROOT}/bin/ls" -l / || true
+
 _magic_cp() {
   echo ">>> Merging /${1} ..."
-  local _subdir
-  if [[ ${1} =~ / ]]; then
-    _subdir=${1%/*}
-  fi
-  ${_LD_SO} --library-path "${NEWROOT}/lib64" "${NEWROOT}/bin/cp" -a "${NEWROOT}/${1}" /${_subdir} || true
+  set -- ${_LD_SO} --library-path "${NEWROOT}/lib64" "${NEWROOT}/bin/cp" -a "${NEWROOT}/${1}" /
+  echo ">>>" "${@}"
+  "${@}" || true
 }
 _magic_cp bin
 _magic_cp sbin
