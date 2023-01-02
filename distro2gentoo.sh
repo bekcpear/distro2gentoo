@@ -1007,6 +1007,7 @@ __config_network() {
     _gateway6+=( "${7}" )
   }
 
+  # check primary network devices
   if [[ ${_netdev[0]} == ${_netdev6[0]} ]]; then
     ___assign_net ${_netdev[0]} ${_netproto[0]} ${_netproto6[0]} ${_netdst[0]} ${_netdst6[0]} ${_netgateway[0]} ${_netgateway6[0]}
   else
@@ -1018,15 +1019,16 @@ __config_network() {
     fi
   fi
 
+  # check extra network devices
   local -i _i _j __j
   local -a __added_j
   local __added
-
   for (( _i = 1; _i < ${#_netdev[@]}; _i++ )); do
     __dev=${_netdev[$_i]}
     __added=0
     for (( _j = 1; _j < ${#_netdev6[@]}; _j++ )); do
       if [[ ${__dev} == ${_netdev6[$_j]} ]]; then
+        # means _netdev6[_j] must not equal to _netdev[0], safely to add
         __added_j+=( $_j )
         ___assign_net ${_netdev[$_i]} ${_netproto[$_i]} ${_netproto6[$_j]} ${_netdst[$_i]} ${_netdst6[$_j]} ${_netgateway[$_i]} ${_netgateway6[$_j]}
         __added=1
@@ -1045,7 +1047,15 @@ __config_network() {
       fi
     done
     if [[ ${__added} == 0 ]]; then
-      ___assign_net ${_netdev6[$_j]} "" ${_netproto6[$_j]} "" ${_netdst6[$_j]} "" ${_netgateway6[$_j]}
+      # check whether the _netdev6[_j] is equal to _netdev[0]
+      if [[ ${_netdev6[$_j]} == ${_netdev[0]} ]]; then
+        # _netdev[0] always has the index 0, assign maunally.
+        _proto6[0]="${_netproto6[$_j]}"
+        _dst6[0]="${_netdst6[$_j]}"
+        _gateway6[0]="${_netgateway6[$_j]}"
+      else
+        ___assign_net ${_netdev6[$_j]} "" ${_netproto6[$_j]} "" ${_netdst6[$_j]} "" ${_netgateway6[$_j]}
+      fi
     fi
   done
 
