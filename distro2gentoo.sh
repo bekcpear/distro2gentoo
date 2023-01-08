@@ -187,7 +187,11 @@ else
 fi
 
 _cat() {
-  eval "${_DOWNLOAD_CMD_QUIET} '${1}'"
+  if [[ ${1} == '-H' ]]; then
+    local header="'${2}'"
+    shift 2
+  fi
+  eval "${_DOWNLOAD_CMD_QUIET} ${header:+--header} ${header} '${1}'"
 }
 
 _download() {
@@ -307,8 +311,10 @@ _install_deps() {
 _get_mirror() {
   _log i "Getting mirror list..."
   set +e
-  local _country_code=$(_cat 'https://ip2c.org/self' | cut -d';' -f2)
+  [[ $(_cat -H 'I-Agree-To-Use-Only-For-The-Distro2Gentoo-Script: True' 'https://ip7.d0a.io/self') =~ \"IsoCode\":\"([[:upper:]]{2})\" ]]
+  local _country_code=${BASH_REMATCH[1]}
   local _mirrors
+  : ${_country_code:=CN}
   if [[ $(xmllint --version 2>&1 | head -1 | cut -d' ' -f5 | cut -d'-' -f1) -ge 20909 ]]; then
     eval "_mirrors=\$(_cat 'https://api.gentoo.org/mirrors/distfiles.xml' | \
       xmllint --xpath '/mirrors/mirrorgroup[@country=\"${_country_code}\"]/mirror/uri/text()' -)"
