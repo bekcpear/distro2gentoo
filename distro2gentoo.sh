@@ -4,6 +4,7 @@
 #
 
 set -e
+set -o pipefail
 export LC_ALL=C
 
 # @VARIABLE: LOGLEVEL
@@ -211,6 +212,15 @@ _download() {
 
 _COMMANDS+=" awk bc findmnt gpg ip openssl wc xmllint xz tr sort"
 
+declare -A -g PKG_ip
+PKG_ip[apt]="iproute2"
+PKG_ip[dnf]="iproute"
+PKG_ip[pacman]="iproute2"
+PKG_ip[zypper]="iproute2"
+PKG_ip[urpmi]="iproute2"
+PKG_ip[opkg]="ip"
+PKG_ip[xbps-install]="iproute2"
+
 declare -A -g PKG_xmllint
 PKG_xmllint[apt]="libxml2-utils"
 PKG_xmllint[dnf]="libxml2"
@@ -265,35 +275,35 @@ PKG_cacerts[urpmi]="rootcerts"
 PKG_cacerts[opkg]="ca-certificates"
 PKG_cacerts[xbps-install]="ca-certificates"
 
+__install_pkg() {
+  local -i _ret=0
+  local __command=${1}
+  if command -v apt >/dev/null; then
+    apt-get update
+    eval "apt -y install \${PKG_${__command}[apt]}" || _ret=1
+  elif command -v dnf >/dev/null; then
+    eval "dnf -y install \${PKG_${__command}[dnf]}" || _ret=1
+  elif command -v yum >/dev/null; then
+    eval "yum -y install \${PKG_${__command}[dnf]}" || _ret=1
+  elif command -v pacman >/dev/null; then
+    pacman -Syy
+    eval "pacman --noconfirm -S \${PKG_${__command}[pacman]}" || _ret=1
+  elif command -v zypper >/dev/null; then # SUSE
+    eval "zypper install -y \${PKG_${__command}[zypper]}" || _ret=1
+  elif command -v urpmi >/dev/null; then # Mageia
+    eval "urpmi --force \${PKG_${__command}[urpmi]}" || _ret=1
+  elif command -v opkg >/dev/null; then # OpenWRT
+    eval "opkg install \${PKG_${__command}[opkg]}" || _ret=1
+  elif command -v xbps-install >/dev/null; then # Void Linux
+    eval "xbps-install -y \${PKG_${__command}[xbps-install]}" || _ret=1
+  else
+    _ret=1
+  fi
+  return ${_ret}
+}
+
 _install_deps() {
   #TODO
-
-  function __install_pkg() {
-    local -i _ret=0
-    local __command=${1}
-    if command -v apt >/dev/null; then
-      apt-get update
-      eval "apt -y install \${PKG_${__command}[apt]}" || _ret=1
-    elif command -v dnf >/dev/null; then
-      eval "dnf -y install \${PKG_${__command}[dnf]}" || _ret=1
-    elif command -v yum >/dev/null; then
-      eval "yum -y install \${PKG_${__command}[dnf]}" || _ret=1
-    elif command -v pacman >/dev/null; then
-      pacman -Syy
-      eval "pacman --noconfirm -S \${PKG_${__command}[pacman]}" || _ret=1
-    elif command -v zypper >/dev/null; then # SUSE
-      eval "zypper install -y \${PKG_${__command}[zypper]}" || _ret=1
-    elif command -v urpmi >/dev/null; then # Mageia
-      eval "urpmi --force \${PKG_${__command}[urpmi]}" || _ret=1
-    elif command -v opkg >/dev/null; then # OpenWRT
-      eval "opkg install \${PKG_${__command}[opkg]}" || _ret=1
-    elif command -v xbps-install >/dev/null; then # Void Linux
-      eval "xbps-install -y \${PKG_${__command}[xbps-install]}" || _ret=1
-    else
-      _ret=1
-    fi
-    return ${_ret}
-  }
 
   _log i "Updating ca-certificates ..."
   __install_pkg cacerts || true
@@ -954,6 +964,15 @@ __config_network() {
     _netproto[0]=${3}
     _netdst[0]="0.0.0.0/0"
   }
+  local __iproute_updated=
+  while ! [[ $(ip -d -o route show type unicast to default) =~ ^unicast ]]; do
+    if [[ -n ${__iproute_updated} ]]; then
+      _fatal "iproute2 version is still too old, please solve it manually"
+    fi
+    _log w "iproute2 version is too old, updating it ..."
+    __install_pkg ip
+    __iproute_updated=1
+  done
   while read -r _ _ _ __gateway _ __dev _ __proto _; do
     if [[ -z ${_netdev[0]} ]] || \
       ___with_high_priority ${__dev} ${_netdev[0]}; then
