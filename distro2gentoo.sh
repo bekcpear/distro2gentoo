@@ -1098,7 +1098,7 @@ __config_network() {
       if [[ ${#__devs[@]} -eq 0 ]]; then
         _log w "cannot found the altname for this legacy network device name: $_netdev"
         _log w "use this legacy name, and set 'net.ifnames=0' to the kernel cmdline ..."
-        _GRUB_CMDLINE_LINUX+=" net.ifnames=0"
+        echo -n "LEGACY"
         # TODO: try to guess the correct modern name
       else
         for __dev in ${__devs[@]}; do
@@ -1152,6 +1152,10 @@ __config_network() {
     fi
 
     __dev=$(___the_correct_dev_name ${__dev})
+    if [[ ${__dev} =~ ^LEGACY ]]; then
+      __dev=${__dev#LEGACY}
+      _GRUB_CMDLINE_LINUX+=" net.ifnames=0"
+    fi
 
     local __networkd_match="[Match]" \
         __networkd_network="[Network]" \
