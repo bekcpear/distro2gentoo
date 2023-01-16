@@ -975,10 +975,10 @@ __config_network() {
   done
   while read -r _ _ _ __gateway _ __dev _ __proto _; do
     if [[ -z ${_netdev[0]} ]] || \
-      ___with_high_priority ${__dev} ${_netdev[0]}; then
-      ___assign_primary_net ${__dev} ${__gateway} ${__proto}
+      ___with_high_priority "${__dev}" "${_netdev[0]}"; then
+      ___assign_primary_net "${__dev}" "${__gateway}" "${__proto}"
     fi
-  done<<<$(ip -d -o route show type unicast to default)
+  done<<<"$(ip -d -o route show type unicast to default)"
 
   ___assign_extra_net() {
     local __dst=$1 __via=$2 __gateway=$3 __dev=$4 __proto=$5 __t=$6
@@ -986,6 +986,9 @@ __config_network() {
       __proto=${__dev}
       __dev=${__gateway}
       __gateway=""
+    fi
+    if [[ -z "${__dev}" ]]; then
+      return
     fi
     local __netdevprim="_netdev${__t}[0]"
     if [[ ${!__netdevprim} != ${__dev} ]] && \
@@ -998,8 +1001,8 @@ __config_network() {
   }
   # ipv4 extra route/device
   while read -r _ __dst __via __gateway _ __dev _ __proto _; do
-    ___assign_extra_net ${__dst} ${__via} ${__gateway} ${__dev} ${__proto} ""
-  done<<<$(ip -d -o route show type unicast)
+    ___assign_extra_net "${__dst}" "${__via}" "${__gateway}" "${__dev}" "${__proto}" ""
+  done<<<"$(ip -d -o route show type unicast)"
 
   # ipv6 default route/device
   ___assign_primary_net6() {
@@ -1010,15 +1013,15 @@ __config_network() {
   }
   while read -r _ _ _ __gateway _ __dev _ __proto _; do
     if [[ -z ${_netdev6[0]} ]] || \
-      ___with_high_priority ${__dev} ${_netdev6[0]}; then
-      ___assign_primary_net6 ${__dev} ${__gateway} ${__proto}
+      ___with_high_priority "${__dev}" "${_netdev6[0]}"; then
+      ___assign_primary_net6 "${__dev}" "${__gateway}" "${__proto}"
     fi
-  done<<<$(ip -6 -d -o route show type unicast to default)
+  done<<<"$(ip -6 -d -o route show type unicast to default)"
 
   # ipv6 extra route/device
   while read -r _ __dst __via __gateway _ __dev _ __proto _; do
-    ___assign_extra_net ${__dst} ${__via} ${__gateway} ${__dev} ${__proto} 6
-  done<<<$(ip -6 -d -o route show type unicast | grep -Ev '^unicast[[:space:]]+fe80::')
+    ___assign_extra_net "${__dst}" "${__via}" "${__gateway}" "${__dev}" "${__proto}" 6
+  done<<<"$(ip -6 -d -o route show type unicast | grep -Ev '^unicast[[:space:]]+fe80::')"
 
   local -a _dev _proto _proto6 _dst _dst6 _gateway _gateway6
 
@@ -1092,24 +1095,31 @@ __config_network() {
     if [[ $_netdev =~ ^(eth|wlan) ]] && \
       [[ ! "${_GRUB_CMDLINE_LINUX}${_GRUB_CMDLINE_LINUX_DEFAULT}" =~ net\.ifnames=0 ]]; then
       __devs=($(ip link show ${_netdev} | grep -E '^\s+altname\s' | awk '{print $2}'))
-      for __dev in ${__devs[@]}; do
-        case ${__dev:2:1} in
-          o)
-            _netdev=${__dev}
-            break
-            ;;
-          s)
-            if [[ ${_netdev:2:1} != o ]]; then
+      if [[ ${#__devs[@]} -eq 0 ]]; then
+        _log w "cannot found the altname for this legacy network device name: $_netdev"
+        _log w "use this legacy name, and set 'net.ifnames=0' to the kernel cmdline ..."
+        _GRUB_CMDLINE_LINUX+=" net.ifnames=0"
+        # TODO: try to guess the correct modern name
+      else
+        for __dev in ${__devs[@]}; do
+          case ${__dev:2:1} in
+            o)
               _netdev=${__dev}
-            fi
-            ;;
-          p)
-            if [[ ! ${_netdev:2:1} =~ [os] ]]; then
-              _netdev=${__dev}
-            fi
-            ;;
-        esac
-      done
+              break
+              ;;
+            s)
+              if [[ ${_netdev:2:1} != o ]]; then
+                _netdev=${__dev}
+              fi
+              ;;
+            p)
+              if [[ ! ${_netdev:2:1} =~ [os] ]]; then
+                _netdev=${__dev}
+              fi
+              ;;
+          esac
+        done
+      fi
     fi
     echo -n "${_netdev}"
   }
