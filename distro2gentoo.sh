@@ -1803,7 +1803,7 @@ installNecessaryPkgs
 _config_gentoo() {
 	local fileForPermitRootLogin fileForAuthorizedKeysFile fileForPasswordAuthentication
 	local patForPermitRootLogin='^[[:space:]]*#?[[:space:]]*PermitRootLogin[[:space:]][[:alpha:]-]+$'
-	local patForAuthorizedKeysFile='^[[:space:]]*#?[[:space:]]*AuthorizedKeysFile[[:space:]][[:alpha:]-]+$'
+	local patForAuthorizedKeysFile='^[[:space:]]*#?[[:space:]]*AuthorizedKeysFile[[:space:]][[:alnum:]\./_-]+$'
 	local patForPasswordAuthentication='^[[:space:]]*#?[[:space:]]*PasswordAuthentication[[:space:]][[:alpha:]-]+$'
 
 	__file_for() {
@@ -1821,11 +1821,11 @@ _config_gentoo() {
 	for var in PermitRootLogin AuthorizedKeysFile PasswordAuthentication; do
 		local fileFor="fileFor${var}" patFor="patFor${var}"
 		eval "${fileFor}='$(__file_for "${!patFor}")'"
+		local replaced_str="${var} yes"
+		if [[ $var == "AuthorizedKeysFile" ]]; then
+			replaced_str="${var} .ssh/authorized_keys"
+		fi
 		if [[ ${!fileFor} != "" ]]; then
-			local replaced_str="${var} yes"
-			if [[ $var == "AuthorizedKeysFile" ]]; then
-				replaced_str="${var} .ssh/authorized_keys"
-			fi
 			sed -Ei "/${!patFor}/s@${!patFor}@${replaced_str}@" "${!fileFor}"
 		else
 			echo $'\n'"$replaced_str" >>"${NEWROOT}/etc/ssh/sshd_config"
