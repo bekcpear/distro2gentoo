@@ -6,6 +6,10 @@
    **********************************
 ```
 
+_If something is wrong, try the old version, which was before the refactor:_
+
+https://gitlab.com/cwittlut/distro2gentoo/-/blob/f6ae4a61490259018a423361dae74617cff3a173/distro2gentoo.sh
+
 #### How to run
 
 ```bash
@@ -14,8 +18,7 @@
 #
 # options:
 #
-#   -b, --use-binhost       Enable the **experimental** binhost when installing Gentoo, refer to:
-#                           https://dilfridge.blogspot.com/2021/09/experimental-binary-gentoo-package.html
+#   --disable-binhost       Disable the binhost when installing Gentoo
 #
 #   -h, --help              Show this help
 #
@@ -32,7 +35,8 @@ https://gitlab.com/cwittlut/assets/-/raw/main/distro2gentoo-demo.mp4
 
 #### Description
 
-1. This script supports AMD64(x86-64) and ARM64(AArch64) architectures.
+0. This script supports AMD64(x86-64) and ARM64(AArch64) architectures.
+1. Binhost is enabled by default
 2. All original users will be deleted, but the password of root will be preserved (if the root password is not set, it will be set to `distro2gentoo` ).
 3. SSHD will be set to autostart, the listening port is 22, it can be connected by 'root' user with password authentication.
 4. `/home`, `/root`, `/boot`, kernel module directories and EFI partition mountpoint directories are preserved, all other normal directories and files will be deleted.
@@ -47,7 +51,8 @@ https://gitlab.com/cwittlut/assets/-/raw/main/distro2gentoo-demo.mp4
 
 **这是一个可以转换 Linux 发行版到 Gentoo Linux 的脚本**
 
-1. 本脚本支持 AMD64(x86-64) 和 ARM64(AArch64) 架构。
+0. 本脚本支持 AMD64(x86-64) 和 ARM64(AArch64) 架构。
+1. Binhost 默认启用
 2. 原有的用户都将被删除，但将保留 root 用户的密码（如果 root 用户密码本未设置，那么会被设置为 `distro2gentoo`）。
 3. SSHD 会被设置为自动启动，其监听端口为 22，可以使用 'root' 用户以密码验证的方式登录。
 4. `/home`, `/root`, `/boot`, 内核模块目录和 EFI 分区挂载目录会被保留，其它普通目录及文件都会被删除。
