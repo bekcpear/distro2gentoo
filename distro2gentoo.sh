@@ -718,18 +718,25 @@ getStage3() {
 
 	# prepare stage3 tarball
 	STAGE3_TARBALL="/${stage3s_names[${selected_stage3}]}"
-	download "${stage3_list_url%/*}/${stage3s_paths[${selected_stage3}]}" "$STAGE3_TARBALL"
-
-	# verify stage3 tarball and download again if doesn't match
-	local tries=1
-	while ! gpgVerifyDetachedFile "$STAGE3_TARBALL" "$stage3_asc"; do
-		downloadForce "${stage3_list_url%/*}/${stage3s_paths[${selected_stage3}]}" "$STAGE3_TARBALL"
-		tries=$((tries + 1))
-		if (( tries > 3 )); then
-			_log ee "The downloaded stage3 tarball '$STAGE3_TARBALL' doesn't match its asc file, abort!"
+	local stage3_tarball_exists
+	if [[ -f $STAGE3_TARBALL ]]; then
+		if gpgVerifyDetachedFile "$STAGE3_TARBALL" "$stage3_asc"; then
+			stage3_tarball_exists=1
 		fi
-	done
+	fi
+	if [[ $stage3_tarball_exists != 1 ]]; then
+		download "${stage3_list_url%/*}/${stage3s_paths[${selected_stage3}]}" "$STAGE3_TARBALL"
 
+		# verify stage3 tarball and download again if doesn't match
+		local tries=1
+		while ! gpgVerifyDetachedFile "$STAGE3_TARBALL" "$stage3_asc"; do
+			downloadForce "${stage3_list_url%/*}/${stage3s_paths[${selected_stage3}]}" "$STAGE3_TARBALL"
+			tries=$((tries + 1))
+			if (( tries > 3 )); then
+				_log ee "The downloaded stage3 tarball '$STAGE3_TARBALL' doesn't match its asc file, abort!"
+			fi
+		done
+	fi
 	_log i "Stage3 tarball has been stored as '$STAGE3_TARBALL'."
 }
 
