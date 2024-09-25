@@ -1048,7 +1048,7 @@ installNecessaryPkgs() {
 	_nproc=$(nproc)
 
 	if (( ${#_D2G_ONETIME_PKGS[@]} > 0 )); then
-		_chroot_exec 'DONT_MOUNT_BOOT=1' emerge -l "$_nproc" -1 "${emerge_opts[@]}" "${_D2G_BINHOST_ARGS[@]}" "${_D2G_ONETIME_PKGS[@]}"
+		_chroot_exec env DONT_MOUNT_BOOT=1 emerge -l "$_nproc" -1 "${emerge_opts[@]}" "${_D2G_BINHOST_ARGS[@]}" "${_D2G_ONETIME_PKGS[@]}"
 	fi
 
 	# install necessary pkgs
@@ -1056,14 +1056,14 @@ installNecessaryPkgs() {
 	echo 'sys-kernel/linux-firmware linux-fw-redistributable no-source-code' \
 		>"${NEWROOT}/etc/portage/package.license/linux-firmware"
 	echo 'sys-boot/grub mount' >>"${NEWROOT}/etc/portage/package.use/bootloader"
-	_chroot_exec 'DONT_MOUNT_BOOT=1' emerge -l "$_nproc" -n "${emerge_opts[@]}" "${_D2G_BINHOST_ARGS[@]}" \
+	_chroot_exec env DONT_MOUNT_BOOT=1 emerge -l "$_nproc" -n "${emerge_opts[@]}" "${_D2G_BINHOST_ARGS[@]}" \
 		linux-firmware gentoo-kernel-bin sys-boot/grub sys-boot/os-prober net-misc/openssh "${_D2G_EXTRA_DEPS[@]}"
 
 	# regenerate initramfs
 	if (( ${#_D2G_DRACUT_MODULES[@]} > 0 )); then
 		mkdir -p "${NEWROOT}/etc/dracut.conf.d"
 		echo "add_dracutmodules+=\"${_D2G_DRACUT_MODULES[*]} \"" >>"${NEWROOT}/etc/dracut.conf.d/distro2gentoo.conf"
-		_chroot_exec 'DONT_MOUNT_BOOT=1' emerge --config sys-kernel/gentoo-kernel-bin
+		_chroot_exec env DONT_MOUNT_BOOT=1 emerge --config sys-kernel/gentoo-kernel-bin
 	fi
 }
 
@@ -1622,7 +1622,7 @@ installGRUB() {
 		fi
 	fi
 	# prepare efi
-	if [[ -n $EFI_ENABLED ]]; then
+	if (( EFI_ENABLED == 1 )); then
 		local _bootcurrent _partuuid _partuuid_alt
 		local -a _boot_orders
 		while read -r _head _val; do

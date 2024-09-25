@@ -252,7 +252,7 @@ installGRUB() {
 		fi
 	fi
 	# prepare efi
-	if [[ -n $EFI_ENABLED ]]; then
+	if (( EFI_ENABLED == 1 )); then
 		local _bootcurrent _partuuid _partuuid_alt
 		local -a _boot_orders
 		while read -r _head _val; do
