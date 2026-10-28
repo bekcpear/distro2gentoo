@@ -21,7 +21,6 @@ prepareChroot() {
 	_do cp -aL /lib/modules "${NEWROOT}/lib/" || true
 
 	_analyze_mnt
-	mount /boot || true
 
 	local rootshadow _newpass _newday
 	rootshadow=$(grep -E '^root:' /etc/shadow)
@@ -42,6 +41,66 @@ prepareChroot() {
 		echo $'\n'"GRUB_PLATFORMS=\"efi-64\"" >> "${NEWROOT}/etc/portage/make.conf"
 	fi
 	echo $'\n'"GENTOO_MIRRORS=\"${MIRROR}\"" >> "${NEWROOT}/etc/portage/make.conf"
+
+	prepareBootMounts
+}
+
+# The mount-boot eclass (used by grub and gentoo-kernel-bin) aborts in
+# pkg_pretend when fstab lists /boot or an ESP that is not mounted *as seen
+# from inside the chroot*. /proc/mounts in a chroot only exposes mounts
+# under the chroot root, so the host's /boot and ESP must be made visible
+# at the matching paths before anything is emerged.
+prepareBootMounts() {
+	local boot_in_fstab=0 boot_rbound=0
+
+	# A separate /boot filesystem declared in fstab (a partition or, on
+	# Fedora, a btrfs subvolume) often has the ESP mounted underneath it.
+	if awk '$2 == "/boot" {found=1} END{exit !found}' /etc/fstab; then
+		boot_in_fstab=1
+		mountpoint -q /boot || mount /boot 2>/dev/null || true
+	fi
+
+	# Mount the ESP on the host *before* /boot is rbound below: rbind only
+	# captures submounts that exist at that moment, so an unmounted
+	# /boot/efi would otherwise enter the chroot as an empty directory.
+	local esp_mp=
+	if (( EFI_ENABLED == 1 )); then
+		# candidates understood by the mount-boot eclass, plus Ubuntu's /boot/firmware
+		local mp
+		for mp in /efi /boot/efi /boot/EFI /boot/firmware; do
+			awk -v m="$mp" '$2 == m {found=1} END{exit !found}' /etc/fstab || continue
+			mountpoint -q "$mp" || _do mount "$mp" 2>/dev/null || true
+			if mountpoint -q "$mp"; then
+				esp_mp="$mp"
+			else
+				_log w "ESP '${mp}' is in fstab but cannot be mounted, the grub/kernel emerge may fail."
+			fi
+			break
+		done
+	fi
+
+	# rbind propagates those submounts as one coherent tree, which lets
+	# grub-install resolve the ESP's underlying block device.
+	if (( boot_in_fstab )) && mountpoint -q /boot && \
+		! mountpoint -q "${NEWROOT}/boot"; then
+		_do mount --rbind /boot "${NEWROOT}/boot"
+		boot_rbound=1
+	fi
+
+	(( EFI_ENABLED == 1 )) || return 0
+	[[ -n $esp_mp ]] || return 0
+
+	# an ESP nested under /boot already arrived via the rbind above;
+	# a plain nested bind there would break grub's device resolution
+	if (( boot_rbound == 1 )) && [[ $esp_mp == /boot/* ]]; then
+		EFIMNT="$esp_mp"
+		return
+	fi
+	mkdir -p "${NEWROOT}${esp_mp}"
+	if ! mountpoint -q "${NEWROOT}${esp_mp}"; then
+		_do mount --bind "$esp_mp" "${NEWROOT}${esp_mp}"
+	fi
+	EFIMNT="$esp_mp"
 }
 
 _chroot_exec() {

@@ -16,63 +16,49 @@ if (( BASH_VER_MAJOR < 5 )) && (( BASH_VER_MINOR < 4 )); then
 	exit 1
 fi
 
+
 BINHOST_ENABLED=1
-EFI_ENABLED=0
-NECESSARY_CMDS=()
-MIRROR=""
-STAGE3_TARBALL=""
 
-D2G_GRUB_CMDLINE_LINUX=''
-D2G_GRUB_CMDLINE_LINUX_DEFAULT=''
-D2G_UNUNIFIED_GRUB_CMDLINE_LINUX=''
-D2G_UNUNIFIED_GRUB_CMDLINE_LINUX_DEFAULT=''
-
-EFIMNT=""
-
-GRUB_INSTALLED=0
-GRUB_CONFIGURED=0
 
 CPUARCH="$(uname -m)"
 CPUARCH="${CPUARCH/x86_64/amd64}"
 CPUARCH="${CPUARCH/aarch64/arm64}"
 NEWROOT="/root.d2g.${CPUARCH}"
 TMP_DIR="$(mktemp -t "distro2gentoo.XXXXXXXX" -d)"
+EFI_ENABLED=0
+EFIMNT=""
+
+MIRROR=""
+STAGE3_TARBALL=""
+
+NECESSARY_CMDS=()
+
+D2G_GRUB_CMDLINE_LINUX=''
+D2G_GRUB_CMDLINE_LINUX_DEFAULT=''
+D2G_UNUNIFIED_GRUB_CMDLINE_LINUX=''
+D2G_UNUNIFIED_GRUB_CMDLINE_LINUX_DEFAULT=''
+GRUB_INSTALLED=0
+GRUB_CONFIGURED=0
+
+declare -a _D2G_FS_SOURCES _D2G_FS_MOUNTPOINTS _D2G_FS_TYPES _D2G_FS_OPTS
+_D2G_LVM_ENABLED=0
+declare -a _D2G_LVM_LVS _D2G_LVM_LVS_MOUNTPOINTS
+_D2G_LUKS_ENABLED=0
+declare -a _D2G_LUKS_PARTS _D2G_LUKS_PARTS_MOUNTPOINTS _D2G_LUKS_PARTS_PARENTS
+_D2G_BTRFS_ENABLED=0
+_D2G_BTRFS_SUBVOL_ROOTFS=""
+declare -a _D2G_BTRFS_MOUNTPOINTS _D2G_BTRFS_SUBVOLS _D2G_BTRFS_OPTS
+_D2G_EXCLUDED_READONLY_SUBVOL_PATH_OPTS=""
+
+declare -a _D2G_DRACUT_MODULES _D2G_ONETIME_PKGS _D2G_EXTRA_DEPS _D2G_BINHOST_ARGS
+_D2G_PKG_DB_Updated=0
+
+_D2G_ALL_UMOUNTED=1
 
 trap '
 rm -rf "$TMP_DIR"
 umount -R "$NEWROOT"/* &>/dev/null || true
 ' EXIT
-
-[[ -z ${_BASHFUNC_DO} ]] || return 0
-_BASHFUNC_DO=1
-
-if [[ -z ${_BASHFUNC_DO_OFD} ]]; then
-	eval "exec {_BASHFUNC_DO_OFD}>&1"
-fi
-
-: "${_BASHFUNC_DO_DATE:=on}"
-: "${_BASHFUNC_DO_DATE_FORMAT:=+[%Y-%m-%d %H:%M:%S] }"
-
-_do() {
-	local prefix
-	if [[ ${1} == "-p" ]]; then
-		shift
-		prefix="${1}"
-		shift
-	fi
-
-	[[ -n ${1} ]] || return 0
-
-	local msg='\x1b[1m\x1b[32m'
-	if [[ ${_BASHFUNC_DO_DATE} == "on" ]]; then
-		msg+=$(date "${_BASHFUNC_DO_DATE_FORMAT}")
-	fi
-	msg+="${prefix}${prefix:+ }"
-	msg+='>>>\x1b[0m '
-	msg+="$*"
-	eval ">&${_BASHFUNC_DO_OFD} echo -e \${msg}"
-	"${@}"
-}
 [[ -z ${_BASHFUNC_LOG} ]] || return 0
 _BASHFUNC_LOG=1
 
@@ -163,6 +149,36 @@ _log() {
 	fi
 }
 
+[[ -z ${_BASHFUNC_DO} ]] || return 0
+_BASHFUNC_DO=1
+
+if [[ -z ${_BASHFUNC_DO_OFD} ]]; then
+	eval "exec {_BASHFUNC_DO_OFD}>&1"
+fi
+
+: "${_BASHFUNC_DO_DATE:=on}"
+: "${_BASHFUNC_DO_DATE_FORMAT:=+[%Y-%m-%d %H:%M:%S] }"
+
+_do() {
+	local prefix
+	if [[ ${1} == "-p" ]]; then
+		shift
+		prefix="${1}"
+		shift
+	fi
+
+	[[ -n ${1} ]] || return 0
+
+	local msg='\x1b[1m\x1b[32m'
+	if [[ ${_BASHFUNC_DO_DATE} == "on" ]]; then
+		msg+=$(date "${_BASHFUNC_DO_DATE_FORMAT}")
+	fi
+	msg+="${prefix}${prefix:+ }"
+	msg+='>>>\x1b[0m '
+	msg+="$*"
+	eval ">&${_BASHFUNC_DO_OFD} echo -e \${msg}"
+	"${@}"
+}
 
 printHelp() {
 	echo "
@@ -170,6 +186,8 @@ Usage: distro2gentoo [<options>]
 
 options:
 
+	--yyy                   Answer yes to every confirmation, skip all
+	                        interactive prompts and use defaults (unattended)
 	--disable-binhost       Disable the binhost when installing Gentoo
 	-h, --help              Show this help
 "
@@ -198,6 +216,42 @@ gpgVerifyDetachedFile() {
 	_gpg --verify "$2" "$1"
 }
 
+countdown() {
+	local seconds=$2
+	if [[ ${D2G_COUNTDOWN:-1} == 0 ]]; then
+		echo "${1}(skipped)"
+		return
+	fi
+	echo -en "$1\e[33m\e[1m"
+	while (( seconds > 0 )); do
+		echo -en "${seconds} "
+		seconds=$((seconds - 1))
+		sleep 1
+	done
+	echo -e "\e[0m"
+}
+
+confirm_or_abort() {
+	if [[ ${D2G_ASSUME_YES:-0} == 1 || ${D2G_NONINTERACTIVE:-0} == 1 ]]; then
+		return 0
+	fi
+	# Only prompt when running interactively (stdin is a real TTY).
+	# Under ssh-without-a-tty / pipes / CI there is nobody to answer;
+	# treat that as non-interactive and proceed with the defaults.
+	if [[ ! -t 0 ]]; then
+		return 0
+	fi
+	local _reply=""
+	read -r -p "$(printf 'Proceed? [y/N]: ')" _reply || true
+	case $_reply in
+		y|Y) return 0 ;;
+		*)
+			_log ee "Aborted by user."
+			return 1
+			;;
+	esac
+}
+
 firstTip() {
 	echo
 	_log n "    1. This script won't format disks,"
@@ -208,14 +262,8 @@ firstTip() {
 	echo
 	_log n "  To avoid rebooting without privileges, make sure at least one interactive shell with root privileges is active."
 	echo
-	WAIT=5
-	echo -en "Starting in: \e[33m\e[1m"
-	while [[ ${WAIT} -gt 0 ]]; do
-		echo -en "${WAIT} "
-		WAIT=$((WAIT -  1))
-		sleep 1
-	done
-	echo -e "\e[0m"
+	confirm_or_abort
+	countdown "Starting in: " 5
 }
 
 
@@ -227,15 +275,20 @@ parseParams() {
 		_log ee "The Linux version of command 'getopt' is necessory to parse parameters."
 	fi
 	local _args
-	if ! _args=$(getopt -o 'h' -l 'disable-binhost,help' -n 'distro2gentoo' -- "$@"); then
+	if ! _args=$(getopt -o 'h' -l 'yyy,disable-binhost,help' -n 'distro2gentoo' -- "$@"); then
 		printHelp 1
 	fi
 	set -e
 
 	# parse arguments
 	eval "set -- ${_args}"
+	local _assume_yes=0
 	while true; do
 		case "${1}" in
+			--yyy)
+				_assume_yes=1
+				shift
+				;;
 			--disable-binhost)
 				BINHOST_ENABLED=0
 				shift
@@ -252,6 +305,9 @@ parseParams() {
 				;;
 		esac
 	done
+	if [ "$_assume_yes" -eq 1 ]; then
+		export D2G_ASSUME_YES=1
+	fi
 }
 
 
@@ -305,185 +361,94 @@ downloadForce() {
 
 NECESSARY_CMDS+=("awk" "bc" "findmnt" "git" "gpg" "ip" "openssl" "sort" "tr" "wc" "xmllint" "xz")
 
-declare -A -g _D2G_PKG_awk
-_D2G_PKG_awk[apt]="gawk"
-_D2G_PKG_awk[dnf]="gawk"
-_D2G_PKG_awk[opkg]="gawk"
-_D2G_PKG_awk[pacman]="gawk"
-_D2G_PKG_awk[urpmi]="gawk"
-_D2G_PKG_awk[yum]="gawk"
-_D2G_PKG_awk[zypper]="gawk"
-_D2G_PKG_awk[xbps-install]="gawk"
+_D2G_PMS=(apt dnf yum pacman zypper urpmi opkg xbps-install)
 
-declare -A -g _D2G_PKG_bc
-_D2G_PKG_bc[apt]="bc"
-_D2G_PKG_bc[dnf]="bc"
-_D2G_PKG_bc[opkg]="bc"
-_D2G_PKG_bc[pacman]="bc"
-_D2G_PKG_bc[urpmi]="bc"
-_D2G_PKG_bc[yum]="bc"
-_D2G_PKG_bc[zypper]="bc"
-_D2G_PKG_bc[xbps-install]="bc"
+declare -A -g _D2G_PKG=(
+	# awk is provided by gawk everywhere
+	[awk:apt]=gawk [awk:dnf]=gawk [awk:yum]=gawk [awk:pacman]=gawk
+	[awk:zypper]=gawk [awk:urpmi]=gawk [awk:opkg]=gawk [awk:xbps-install]=gawk
 
-declare -A -g _D2G_PKG_efibootmgr
-_D2G_PKG_efibootmgr[apt]="efibootmgr"
-_D2G_PKG_efibootmgr[dnf]="efibootmgr"
-_D2G_PKG_efibootmgr[opkg]="efibootmgr"
-_D2G_PKG_efibootmgr[pacman]="efibootmgr"
-_D2G_PKG_efibootmgr[urpmi]="efibootmgr"
-_D2G_PKG_efibootmgr[yum]="efibootmgr"
-_D2G_PKG_efibootmgr[zypper]="efibootmgr"
-_D2G_PKG_efibootmgr[xbps-install]="efibootmgr"
+	# findmnt belongs to util-linux
+	[findmnt:apt]=util-linux [findmnt:dnf]=util-linux [findmnt:yum]=util-linux
+	[findmnt:pacman]=util-linux [findmnt:zypper]=util-linux [findmnt:urpmi]=util-linux
+	[findmnt:opkg]=util-linux [findmnt:xbps-install]=util-linux
 
-declare -A -g _D2G_PKG_findmnt
-_D2G_PKG_findmnt[apt]="util-linux"
-_D2G_PKG_findmnt[dnf]="util-linux"
-_D2G_PKG_findmnt[opkg]="util-linux"
-_D2G_PKG_findmnt[pacman]="util-linux"
-_D2G_PKG_findmnt[urpmi]="util-linux"
-_D2G_PKG_findmnt[yum]="util-linux"
-_D2G_PKG_findmnt[zypper]="util-linux"
-_D2G_PKG_findmnt[xbps-install]="util-linux"
+	# sort/tr/wc belong to coreutils
+	[sort:apt]=coreutils [sort:dnf]=coreutils [sort:yum]=coreutils [sort:pacman]=coreutils
+	[sort:zypper]=coreutils [sort:urpmi]=coreutils [sort:opkg]=coreutils
+	[sort:xbps-install]=coreutils
+	[tr:apt]=coreutils [tr:dnf]=coreutils [tr:yum]=coreutils [tr:pacman]=coreutils
+	[tr:zypper]=coreutils [tr:urpmi]=coreutils [tr:opkg]=coreutils [tr:xbps-install]=coreutils
+	[wc:apt]=coreutils [wc:dnf]=coreutils [wc:yum]=coreutils [wc:pacman]=coreutils
+	[wc:zypper]=coreutils [wc:urpmi]=coreutils [wc:opkg]=coreutils [wc:xbps-install]=coreutils
 
-declare -A -g _D2G_PKG_git
-_D2G_PKG_git[apt]="git"
-_D2G_PKG_git[dnf]="git"
-_D2G_PKG_git[opkg]="git"
-_D2G_PKG_git[pacman]="git"
-_D2G_PKG_git[urpmi]="git"
-_D2G_PKG_git[yum]="git"
-_D2G_PKG_git[zypper]="git"
-_D2G_PKG_git[xbps-install]="git"
+	# gpg
+	[gpg:apt]=gnupg [gpg:dnf]=gnupg2 [gpg:yum]=gnupg2 [gpg:pacman]=gnupg
+	[gpg:zypper]=gpg2 [gpg:urpmi]=gnupg2 [gpg:opkg]=gnupg [gpg:xbps-install]=gnupg
 
-declare -A -g _D2G_PKG_gpg
-_D2G_PKG_gpg[apt]="gnupg"
-_D2G_PKG_gpg[dnf]="gnupg2"
-_D2G_PKG_gpg[opkg]="gnupg"
-_D2G_PKG_gpg[pacman]="gnupg"
-_D2G_PKG_gpg[urpmi]="gnupg2"
-_D2G_PKG_gpg[yum]="gnupg2"
-_D2G_PKG_gpg[zypper]="gpg2"
-_D2G_PKG_gpg[xbps-install]="gnupg"
+	# ip
+	[ip:apt]=iproute2 [ip:dnf]=iproute [ip:yum]=iproute [ip:pacman]=iproute2
+	[ip:zypper]=iproute2 [ip:urpmi]=iproute2 [ip:xbps-install]=iproute2
 
-declare -A -g _D2G_PKG_ip
-_D2G_PKG_ip[apt]="iproute2"
-_D2G_PKG_ip[dnf]="iproute"
-_D2G_PKG_ip[opkg]="ip"
-_D2G_PKG_ip[pacman]="iproute2"
-_D2G_PKG_ip[urpmi]="iproute2"
-_D2G_PKG_ip[yum]="iproute"
-_D2G_PKG_ip[zypper]="iproute2"
-_D2G_PKG_ip[xbps-install]="iproute2"
+	# xmllint
+	[xmllint:apt]=libxml2-utils [xmllint:dnf]=libxml2 [xmllint:yum]=libxml2
+	[xmllint:pacman]=libxml2
+	[xmllint:zypper]=libxml2-tools [xmllint:urpmi]=lib64xml2
+	[xmllint:opkg]=libxml2 [xmllint:xbps-install]=libxml2
 
-declare -A -g _D2G_PKG_openssl
-_D2G_PKG_openssl[apt]="openssl"
-_D2G_PKG_openssl[dnf]="openssl"
-_D2G_PKG_openssl[opkg]="openssl"
-_D2G_PKG_openssl[pacman]="openssl"
-_D2G_PKG_openssl[urpmi]="openssl"
-_D2G_PKG_openssl[yum]="openssl"
-_D2G_PKG_openssl[zypper]="openssl"
-_D2G_PKG_openssl[xbps-install]="openssl"
+	# xz (curl defaults to the command key on every package manager)
+	[xz:apt]=xz-utils
 
-declare -A -g _D2G_PKG_sort
-_D2G_PKG_sort[apt]="coreutils"
-_D2G_PKG_sort[dnf]="coreutils"
-_D2G_PKG_sort[opkg]="coreutils"
-_D2G_PKG_sort[pacman]="coreutils"
-_D2G_PKG_sort[urpmi]="coreutils"
-_D2G_PKG_sort[yum]="coreutils"
-_D2G_PKG_sort[zypper]="coreutils"
-_D2G_PKG_sort[xbps-install]="coreutils"
-
-declare -A -g _D2G_PKG_tr
-_D2G_PKG_tr[apt]="coreutils"
-_D2G_PKG_tr[dnf]="coreutils"
-_D2G_PKG_tr[opkg]="coreutils"
-_D2G_PKG_tr[pacman]="coreutils"
-_D2G_PKG_tr[urpmi]="coreutils"
-_D2G_PKG_tr[yum]="coreutils"
-_D2G_PKG_tr[zypper]="coreutils"
-_D2G_PKG_tr[xbps-install]="coreutils"
-
-declare -A -g _D2G_PKG_wc
-_D2G_PKG_wc[apt]="coreutils"
-_D2G_PKG_wc[dnf]="coreutils"
-_D2G_PKG_wc[opkg]="coreutils"
-_D2G_PKG_wc[pacman]="coreutils"
-_D2G_PKG_wc[urpmi]="coreutils"
-_D2G_PKG_wc[yum]="coreutils"
-_D2G_PKG_wc[zypper]="coreutils"
-_D2G_PKG_wc[xbps-install]="coreutils"
-
-declare -A -g _D2G_PKG_xmllint
-_D2G_PKG_xmllint[apt]="libxml2-utils"
-_D2G_PKG_xmllint[dnf]="libxml2"
-_D2G_PKG_xmllint[pacman]="libxml2"
-_D2G_PKG_xmllint[zypper]="libxml2-tools"
-_D2G_PKG_xmllint[urpmi]="lib64xml2"
-_D2G_PKG_xmllint[opkg]="libxml2"
-_D2G_PKG_xmllint[xbps-install]="libxml2"
-
-declare -A -g _D2G_PKG_curl
-_D2G_PKG_curl[apt]="curl"
-_D2G_PKG_curl[dnf]="curl"
-_D2G_PKG_curl[pacman]="curl"
-_D2G_PKG_curl[zypper]="curl"
-_D2G_PKG_curl[urpmi]="curl"
-_D2G_PKG_curl[opkg]="curl"
-_D2G_PKG_curl[xbps-install]="curl"
-
-declare -A -g _D2G_PKG_xz
-_D2G_PKG_xz[apt]="xz-utils"
-_D2G_PKG_xz[dnf]="xz"
-_D2G_PKG_xz[pacman]="xz"
-_D2G_PKG_xz[zypper]="xz"
-_D2G_PKG_xz[urpmi]="xz"
-_D2G_PKG_xz[opkg]="xz"
-_D2G_PKG_xz[xbps-install]="xz"
-
-declare -A -g _D2G_PKG_cacerts
-_D2G_PKG_cacerts[apt]="ca-certificates"
-_D2G_PKG_cacerts[dnf]="ca-certificates"
-_D2G_PKG_cacerts[pacman]="ca-certificates"
-_D2G_PKG_cacerts[zypper]="ca-certificates"
-_D2G_PKG_cacerts[urpmi]="rootcerts"
-_D2G_PKG_cacerts[opkg]="ca-certificates"
-_D2G_PKG_cacerts[xbps-install]="ca-certificates"
-
-_D2G_PKG_DB_Updated=0
+	# CA certificates (not a command key, installed explicitly by _installDeps)
+	[cacerts:apt]=ca-certificates [cacerts:dnf]=ca-certificates
+	[cacerts:yum]=ca-certificates [cacerts:pacman]=ca-certificates
+	[cacerts:zypper]=ca-certificates
+	[cacerts:urpmi]=rootcerts [cacerts:opkg]=ca-certificates
+	[cacerts:xbps-install]=ca-certificates
+)
 
 _install_pkg() {
-	local -i ret=0
-	local cmd_key="$1"
-	if command -v apt >/dev/null; then
-		if (( _D2G_PKG_DB_Updated == 0 )); then
-			apt-get update
-			_D2G_PKG_DB_Updated=1
-		fi
-		eval "apt -y install \${_D2G_PKG_${cmd_key}[apt]}" || ret=$?
-	elif command -v dnf >/dev/null; then
-		eval "dnf -y install \${_D2G_PKG_${cmd_key}[dnf]}" || ret=$?
-	elif command -v yum >/dev/null; then
-		eval "yum -y install \${_D2G_PKG_${cmd_key}[yum]}" || ret=$?
-	elif command -v pacman >/dev/null; then
-		if (( _D2G_PKG_DB_Updated == 0 )); then
-			pacman -Syy
-			_D2G_PKG_DB_Updated=1
-		fi
-		eval "pacman --noconfirm -S \${_D2G_PKG_${cmd_key}[pacman]}" || ret=$?
-	elif command -v zypper >/dev/null; then # SUSE
-		eval "zypper install -y \${_D2G_PKG_${cmd_key}[zypper]}" || ret=$?
-	elif command -v urpmi >/dev/null; then # Mageia
-		eval "urpmi --force \${_D2G_PKG_${cmd_key}[urpmi]}" || ret=$?
-	elif command -v opkg >/dev/null; then # OpenWRT
-		eval "opkg install \${_D2G_PKG_${cmd_key}[opkg]}" || ret=$?
-	elif command -v xbps-install >/dev/null; then # Void Linux
-		eval "xbps-install -y \${_D2G_PKG_${cmd_key}[xbps-install]}" || ret=$?
-	else
-		ret=1
-	fi
-	return $ret
+	local cmd_key=$1 pkg pm
+	for pm in "${_D2G_PMS[@]}"; do
+		command -v "$pm" >/dev/null || continue
+		pkg="${_D2G_PKG[${cmd_key}:${pm}]:-$cmd_key}"
+		case "$pm" in
+			apt)
+				if (( _D2G_PKG_DB_Updated == 0 )); then
+					apt-get update
+					_D2G_PKG_DB_Updated=1
+				fi
+				apt -y install "$pkg"
+				;;
+			dnf)
+				dnf -y install "$pkg"
+				;;
+			yum)
+				yum -y install "$pkg"
+				;;
+			pacman)
+				if (( _D2G_PKG_DB_Updated == 0 )); then
+					pacman -Syy
+					_D2G_PKG_DB_Updated=1
+				fi
+				pacman --noconfirm -S "$pkg"
+				;;
+			zypper) # SUSE
+				zypper install -y "$pkg"
+				;;
+			urpmi) # Mageia
+				urpmi --force "$pkg"
+				;;
+			opkg) # OpenWRT
+				opkg install "$pkg"
+				;;
+			xbps-install) # Void Linux
+				xbps-install -y "$pkg"
+				;;
+		esac
+		return $?
+	done
+	return 1
 }
 
 _installDeps() {
@@ -494,7 +459,7 @@ _installDeps() {
 	for cmd_key in "${NECESSARY_CMDS[@]}"; do
 		if ! command -v "${cmd_key}" >/dev/null; then
 			if ! _install_pkg "${cmd_key}"; then
-				_fatal "Command '${cmd_key}' was not found and the installation failed!"
+				_log ee "Command '${cmd_key}' was not found and the installation failed!"
 			fi
 		fi
 	done
@@ -557,7 +522,6 @@ prerequisitesSolve() {
 	_installGPGKeys
 }
 
-
 _D2G_GIT_MIRROR="https://github.com/gentoo-mirror/gentoo.git"
 
 _uris_from_xml() {
@@ -582,6 +546,13 @@ _uris_from_xml() {
 }
 
 setupMirror() {
+	if [[ -n ${D2G_MIRROR:-} ]]; then
+		MIRROR="$D2G_MIRROR"
+		[[ -n ${D2G_GIT_MIRROR:-} ]] && _D2G_GIT_MIRROR="$D2G_GIT_MIRROR"
+		_log i "Mirror has been preset to '${MIRROR}'."
+		return
+	fi
+
 	_log i "Getting mirror list..."
 
 	set +e
@@ -619,28 +590,33 @@ setupMirror() {
 			_log n "    [${i}] ${uri}"
 		fi
 	done
-	mirrors_arr+=( "CUSTOM" )
-	_log n "    [${i}] <Enter custom URL>"
-	while [[ ${#mirrors_arr[@]} -gt 0 ]]; do
-		read -r -p "Choose prefered mirror (enter the num, empty for default): " selected
-		[[ -n ${selected} ]] || break
-		if [[ ${selected} =~ ^[[:digit:]]+$ ]] && [[ -n ${mirrors_arr[${selected}]} ]]; then
-			MIRROR=${mirrors_arr[${selected}]}
-			break;
-		else
-			_log w "out of range!"
-		fi
-	done
-	if [[ ${MIRROR} == CUSTOM ]]; then
-		_set_custom_mirror() {
-			read -r -p "Enter your custom URL: " MIRROR
-			if [[ ! ${MIRROR} =~ ^(http[s]?|ftp):// ]]; then
-				_log e "Please use http[s] or ftp URL."
-				_set_custom_mirror
+	if [[ ${D2G_NONINTERACTIVE:-0} != 1 ]]; then
+		mirrors_arr+=( "CUSTOM" )
+		_log n "    [${i}] <Enter custom URL>"
+		while [[ ${#mirrors_arr[@]} -gt 0 ]]; do
+			read -r -p "Choose prefered mirror (enter the num, empty for default): " selected
+			[[ -n ${selected} ]] || break
+			if [[ ${selected} =~ ^[[:digit:]]+$ ]] && [[ -n ${mirrors_arr[${selected}]} ]]; then
+				MIRROR=${mirrors_arr[${selected}]}
+				break;
+			else
+				_log w "out of range!"
 			fi
-		}
-		_set_custom_mirror
+		done
+		if [[ ${MIRROR} == CUSTOM ]]; then
+			_set_custom_mirror() {
+				read -r -p "Enter your custom URL: " MIRROR
+				if [[ ! ${MIRROR} =~ ^(http[s]?|ftp):// ]]; then
+					_log e "Please use http[s] or ftp URL."
+					_set_custom_mirror
+				fi
+			}
+			_set_custom_mirror
+		fi
+	else
+		_log i "Non-interactive mode, using the default mirror '${MIRROR:-<empty>}'."
 	fi
+	[[ -n ${D2G_GIT_MIRROR:-} ]] && _D2G_GIT_MIRROR="$D2G_GIT_MIRROR"
 	if [[ -z ${MIRROR} ]]; then
 		MIRROR="https://gentoo.osuosl.org/"
 	fi
@@ -661,7 +637,10 @@ getStage3() {
 	download "$stage3_list_url" "${local_stage3_list}.with-gpg-signature"
 	gpgDecryptAndOutput "${local_stage3_list}.with-gpg-signature" "$local_stage3_list"
 
-	while read -r relative_path stage3_size _; do
+	# the list's last data line may have no trailing newline; a plain
+	# `while read` would silently drop it, so also process a final partial
+	# read (read returns non-zero but still fills the variables)
+	while read -r relative_path stage3_size _ || [[ -n $relative_path ]]; do
 		if [[ $relative_path =~ ^[[:space:]]*#|^[[:space:]]*$ ]]; then
 			continue
 		fi
@@ -692,23 +671,37 @@ getStage3() {
 		_log ee "No stage3 list, please check the mirror URL or your network."
 	fi
 
-	while :; do
-		read -r -p "Choose prefered stage3 tarball (enter the num, empty for the default): " selected_stage3_tmp
-		if [[ -z ${selected_stage3_tmp} ]]; then
-			if [[ $selected_stage3 == "" || -z $selected_stage3 ]]; then
-				_log e "No default stage3 selected, please select one!"
-			else
-				_log i "Use the default stage3."
+	if [[ -n ${D2G_STAGE3_REGEX:-} ]]; then
+		local _si _stage3_matched=0
+		for (( _si=0; _si<${#stage3s_names[@]}; _si++ )); do
+			if [[ ${stage3s_names[_si]} =~ $D2G_STAGE3_REGEX ]]; then
+				selected_stage3=$_si
+				_stage3_matched=1
 				break
 			fi
-		fi
-		if [[ ${selected_stage3_tmp} =~ ^[[:digit:]]+$ ]] && [[ -n ${stage3s_names[${selected_stage3_tmp}]} ]]; then
-			selected_stage3=${selected_stage3_tmp}
-			break;
-		else
-			_log e "Out of range, please select a valid one!"
-		fi
-	done
+		done
+		(( _stage3_matched )) || _log ee "No stage3 tarball matches regex '${D2G_STAGE3_REGEX}'."
+	elif [[ ${D2G_NONINTERACTIVE:-0} == 1 ]]; then
+		[[ -n $selected_stage3 ]] || _log ee "No default stage3 tarball available."
+	else
+		while :; do
+			read -r -p "Choose prefered stage3 tarball (enter the num, empty for the default): " selected_stage3_tmp
+			if [[ -z ${selected_stage3_tmp} ]]; then
+				if [[ $selected_stage3 == "" || -z $selected_stage3 ]]; then
+					_log e "No default stage3 selected, please select one!"
+				else
+					_log i "Use the default stage3."
+					break
+				fi
+			fi
+			if [[ ${selected_stage3_tmp} =~ ^[[:digit:]]+$ ]] && [[ -n ${stage3s_names[${selected_stage3_tmp}]} ]]; then
+				selected_stage3=${selected_stage3_tmp}
+				break;
+			else
+				_log e "Out of range, please select a valid one!"
+			fi
+		done
+	fi
 
 	_log i "selected stage3: ${stage3s_names[${selected_stage3}]}"
 
@@ -750,18 +743,6 @@ unpackStage3ToNEWROOT() {
 	popd || _log ee "Popd from '$NEWROOT' failed!"
 }
 
-
-declare -a _D2G_FS_SOURCES _D2G_FS_MOUNTPOINTS _D2G_FS_TYPES _D2G_FS_OPTS
-
-_D2G_LVM_ENABLED=0
-declare -a _D2G_LVM_LVS _D2G_LVM_LVS_MOUNTPOINTS
-
-_D2G_LUKS_ENABLED=0
-declare -a _D2G_LUKS_PARTS _D2G_LUKS_PARTS_MOUNTPOINTS _D2G_LUKS_PARTS_PARENTS
-
-_D2G_BTRFS_ENABLED=0
-_D2G_BTRFS_SUBVOL_ROOTFS=""
-declare -a _D2G_BTRFS_MOUNTPOINTS _D2G_BTRFS_SUBVOLS _D2G_BTRFS_OPTS
 
 
 _analyze_mnt() {
@@ -820,6 +801,8 @@ _analyze_mnt() {
 
 prepareBtrfsStuffs() {
 	# detect btrfs readonly subvol
+	local -a __subvol_path_readonlys
+	local __subvol_path __subvol_path_remaining __subvol_path_readonly i
 	while read -r _ _ _ _ _ _ _ _ __subvol_path; do
 		for (( i = 0; i < ${#_D2G_BTRFS_SUBVOLS[@]}; ++i )); do
 			__subvol_path=${__subvol_path#<FS_TREE>}
@@ -876,7 +859,6 @@ prepareChroot() {
 	_do cp -aL /lib/modules "${NEWROOT}/lib/" || true
 
 	_analyze_mnt
-	mount /boot || true
 
 	local rootshadow _newpass _newday
 	rootshadow=$(grep -E '^root:' /etc/shadow)
@@ -897,6 +879,61 @@ prepareChroot() {
 		echo $'\n'"GRUB_PLATFORMS=\"efi-64\"" >> "${NEWROOT}/etc/portage/make.conf"
 	fi
 	echo $'\n'"GENTOO_MIRRORS=\"${MIRROR}\"" >> "${NEWROOT}/etc/portage/make.conf"
+
+	prepareBootMounts
+}
+
+prepareBootMounts() {
+	local boot_in_fstab=0 boot_rbound=0
+
+	# A separate /boot filesystem declared in fstab (a partition or, on
+	# Fedora, a btrfs subvolume) often has the ESP mounted underneath it.
+	if awk '$2 == "/boot" {found=1} END{exit !found}' /etc/fstab; then
+		boot_in_fstab=1
+		mountpoint -q /boot || mount /boot 2>/dev/null || true
+	fi
+
+	# Mount the ESP on the host *before* /boot is rbound below: rbind only
+	# captures submounts that exist at that moment, so an unmounted
+	# /boot/efi would otherwise enter the chroot as an empty directory.
+	local esp_mp=
+	if (( EFI_ENABLED == 1 )); then
+		# candidates understood by the mount-boot eclass, plus Ubuntu's /boot/firmware
+		local mp
+		for mp in /efi /boot/efi /boot/EFI /boot/firmware; do
+			awk -v m="$mp" '$2 == m {found=1} END{exit !found}' /etc/fstab || continue
+			mountpoint -q "$mp" || _do mount "$mp" 2>/dev/null || true
+			if mountpoint -q "$mp"; then
+				esp_mp="$mp"
+			else
+				_log w "ESP '${mp}' is in fstab but cannot be mounted, the grub/kernel emerge may fail."
+			fi
+			break
+		done
+	fi
+
+	# rbind propagates those submounts as one coherent tree, which lets
+	# grub-install resolve the ESP's underlying block device.
+	if (( boot_in_fstab )) && mountpoint -q /boot && \
+		! mountpoint -q "${NEWROOT}/boot"; then
+		_do mount --rbind /boot "${NEWROOT}/boot"
+		boot_rbound=1
+	fi
+
+	(( EFI_ENABLED == 1 )) || return 0
+	[[ -n $esp_mp ]] || return 0
+
+	# an ESP nested under /boot already arrived via the rbind above;
+	# a plain nested bind there would break grub's device resolution
+	if (( boot_rbound == 1 )) && [[ $esp_mp == /boot/* ]]; then
+		EFIMNT="$esp_mp"
+		return
+	fi
+	mkdir -p "${NEWROOT}${esp_mp}"
+	if ! mountpoint -q "${NEWROOT}${esp_mp}"; then
+		_do mount --bind "$esp_mp" "${NEWROOT}${esp_mp}"
+	fi
+	EFIMNT="$esp_mp"
 }
 
 _chroot_exec() {
@@ -913,8 +950,6 @@ _chroot_exec() {
 	eval "chroot '$NEWROOT' /bin/bash -lc '$cmds'"
 }
 
-
-declare -a _D2G_DRACUT_MODULES _D2G_ONETIME_PKGS _D2G_EXTRA_DEPS
 
 _D2G_BINPKGS_PROFILE_VER="23.0"
 
@@ -1054,6 +1089,7 @@ installNecessaryPkgs() {
 	local _nproc emerge_opts=("--autounmask=y" "--autounmask-license=y" "--autounmask-use=y" "--autounmask-write=y" "--autounmask-continue=y" "-vj")
 	_nproc=$(nproc)
 
+
 	if (( ${#_D2G_ONETIME_PKGS[@]} > 0 )); then
 		_chroot_exec env DONT_MOUNT_BOOT=1 emerge -l "$_nproc" -1 "${emerge_opts[@]}" "${_D2G_BINHOST_ARGS[@]}" "${_D2G_ONETIME_PKGS[@]}"
 	fi
@@ -1079,6 +1115,17 @@ configNetwork() {
 	local -A _dev_prefix_priority=([en]=9 [wl]=8 [ww]=7 [eth]=6 [wlan]=5)
 	local -a _netdev _netproto _netdst _netgateway _netdev6 _netproto6 _netdst6 _netgateway6
 	local _ __dst __via __gateway __dev __proto
+
+	# Newer iproute2 (>=6.x) prints nexthop routes as
+	#   "default nhid 123 via fe80::2 dev enp0s3 proto ra ..."
+	# followed by an indented "nh_info ..." continuation line. The
+	# positional field parsing below expects the classic
+	#   "default via fe80::2 dev enp0s3 ..."
+	# layout; drop the nhid token and continuation lines so both shapes
+	# parse identically.
+	_normalize_routes() {
+		sed -E -e '/^[[:space:]]/d' -e 's/[[:space:]]+nhid[[:space:]]+[0-9]+//g'
+	}
 
 	_with_high_priority() {
 		local __first=${_dev_prefix_priority[${1:0:4}]:-${_dev_prefix_priority[${1:0:3}]:-${_dev_prefix_priority[${1:0:2}]:-0}}}
@@ -1132,12 +1179,12 @@ configNetwork() {
 			_with_high_priority "${__dev}" "${_netdev[0]}"; then
 			_assign_primary_net "${__dev}" "${__gateway}" "${__proto}"
 		fi
-	done<<<"$(ip -d -o route show type unicast to default)"
+	done<<<"$(ip -d -o route show type unicast to default | _normalize_routes)"
 
 	# ipv4 extra route/device
 	while read -r _ __dst __via __gateway _ __dev _ __proto _; do
 		_assign_extra_net "${__dst}" "${__via}" "${__gateway}" "${__dev}" "${__proto}" ""
-	done<<<"$(ip -d -o route show type unicast)"
+	done<<<"$(ip -d -o route show type unicast | _normalize_routes)"
 
 	# ipv6 default route/device
 	_assign_primary_net6() {
@@ -1151,12 +1198,12 @@ configNetwork() {
 			_with_high_priority "${__dev}" "${_netdev6[0]}"; then
 			_assign_primary_net6 "${__dev}" "${__gateway}" "${__proto}"
 		fi
-	done<<<"$(ip -6 -d -o route show type unicast to default)"
+	done<<<"$(ip -6 -d -o route show type unicast to default | _normalize_routes)"
 
 	# ipv6 extra route/device
 	while read -r _ __dst __via __gateway _ __dev _ __proto _; do
 		_assign_extra_net "${__dst}" "${__via}" "${__gateway}" "${__dev}" "${__proto}" 6
-	done<<<"$(ip -6 -d -o route show type unicast | grep -Ev '^unicast[[:space:]]+fe80::')"
+	done<<<"$(ip -6 -d -o route show type unicast | _normalize_routes | grep -Ev '^unicast[[:space:]]+fe80::')"
 
 	local -a _dev _proto _proto6 _dst _dst6 _gateway _gateway6
 
@@ -1288,10 +1335,39 @@ configNetwork() {
 		fi
 
 		###
-		__dev=$(_the_correct_dev_name "${__dev}")
-		if [[ ${__dev} =~ ^LEGACY ]]; then
-			__dev=${__dev#LEGACY}
+		# Choose the interface name the converted Gentoo system will use.
+		#
+		# A cloud host can rename a NIC away from the hardware-derived
+		# predictable name: cloud-init/netplan persist a "set-name" taken
+		# during first boot (observed: a hand-built btrfs golden kept
+		# enp0s4 via /run/systemd/network/10-netplan-*.link even though the
+		# card sits at PCI 0000:00:03.0). Gentoo has no such override and
+		# uses the systemd/udev default policy, whose stable "path" name
+		# depends only on the PCI location and is identical under every
+		# kernel. So, in priority order:
+		#   1. ID_NET_NAME_PATH from udev (hardware PCI path) -> use it;
+		#   2. if the host name already equals that path name -> keep it;
+		#   3. fallback: nothing usable, bind by MAC and pin eth<index>.
+		local __mac __pathname __gname
+		__mac=$(cat "/sys/class/net/${__dev}/address" 2>/dev/null)
+		__pathname=$(udevadm info "/sys/class/net/${__dev}" 2>/dev/null \
+			| awk -F= '/^E: ID_NET_NAME_PATH=/{print $2; exit}')
+		local __netifrc_mac=""
+		if [[ -n $__pathname ]]; then
+			# Hardware path name is what Gentoo's default policy yields.
+			__dev=$__pathname
+		elif [[ -z $__mac ]]; then
+			__dev=$(_the_correct_dev_name "${__dev}")
+			if [[ ${__dev} =~ ^LEGACY ]]; then
+				__dev=${__dev#LEGACY}
+				D2G_GRUB_CMDLINE_LINUX+=" net.ifnames=0"
+			fi
+		else
+			# Last resort: no udev path info; rename by MAC to eth<index>.
+			__gname="eth${_i}"
+			__dev=$__gname
 			D2G_GRUB_CMDLINE_LINUX+=" net.ifnames=0"
+			__netifrc_mac="mac_${__dev}=\"${__mac}\""
 		fi
 
 		###
@@ -1305,8 +1381,12 @@ configNetwork() {
 			__networkd="" \
 			__netifrc_config="config_${__dev}=\"" \
 			__netifrc_routes="routes_${__dev}=\"" \
-			__netifrc="" \
-			__networkd_match+=$'\n'"Name=${__dev}"
+			__netifrc=""
+		# Always also match on MAC so the config survives any naming drift.
+		if [[ -n $__mac ]]; then
+			__networkd_match+=$'\n'"MACAddress=${__mac}"
+		fi
+		__networkd_match+=$'\n'"Name=${__dev}"
 
 		###
 		for ___ip in "${__ip[@]}"; do
@@ -1363,7 +1443,11 @@ configNetwork() {
 		fi
 		__netifrc_config+=$'\n'"\""
 		__netifrc_routes+=$'\n'"\""
-		__netifrc="${__netifrc_config}"$'\n'"${__netifrc_routes}"
+		if [[ -n $__netifrc_mac ]]; then
+			__netifrc="${__netifrc_mac}"$'\n'"${__netifrc_config}"$'\n'"${__netifrc_routes}"
+		else
+			__netifrc="${__netifrc_config}"$'\n'"${__netifrc_routes}"
+		fi
 
 		mkdir -p "${NEWROOT}/etc/systemd/network"
 		mkdir -p "${NEWROOT}/etc/conf.d"
@@ -1606,9 +1690,19 @@ installGRUB() {
 	sed -i "/GRUB_DEFAULT=/aGRUB_DEFAULT=\"saved\"" "${NEWROOT}/etc/default/grub"
 	echo $'\n'"GRUB_DISABLE_OS_PROBER=false" >>"${NEWROOT}/etc/default/grub"
 
-	# keep the old /boot dir or mountpoint
-	cp -a "${NEWROOT}"/boot/* /boot/
-	mount --bind /boot "${NEWROOT}/boot"
+	# Publish the stage3's /boot artifacts to the host /boot (which the
+	# delete phase preserves). First release the ESP that
+	# prepareBootMounts bind-mounted under NEWROOT/boot, then copy without
+	# crossing filesystems (-x) and rbind /boot so the real ESP propagates
+	# back into the chroot. A separate host /boot partition is already
+	# bind-mounted at NEWROOT/boot and needs none of this.
+	if ! mountpoint -q "${NEWROOT}/boot"; then
+		if [[ -n $EFIMNT && $EFIMNT == /boot/* ]]; then
+			umount "${NEWROOT}${EFIMNT}" 2>/dev/null || true
+		fi
+		cp -ax "${NEWROOT}/boot/." /boot/
+		_do mount --rbind /boot "${NEWROOT}/boot"
+	fi
 
 	# find the boot device
 	if [[ ${CPUARCH} =~ amd64 ]]; then
@@ -1699,7 +1793,10 @@ installGRUB() {
 				fi
 			fi
 			mkdir -p "${NEWROOT}${EFIMNT}"
-			_do mount "${efi_dev}" "${NEWROOT}${EFIMNT}"
+			# prepareBootMounts may already have bind-mounted the host ESP here
+			if ! mountpoint -q "${NEWROOT}${EFIMNT}"; then
+				_do mount "${efi_dev}" "${NEWROOT}${EFIMNT}"
+			fi
 			if [[ ${CPUARCH} == amd64 ]]; then
 				local _target="x86_64-efi"
 			else
@@ -1758,7 +1855,7 @@ _get_menuentry_id_option_from_line() {
 	fi
 }
 
-ConfigureGRUB() {
+configureGRUB() {
 	local _submenu _menuentry __menuentry _line
 	local -a _menuentries
 
@@ -1770,8 +1867,9 @@ ConfigureGRUB() {
 		_menuentries+=( "$(_get_menuentry_id_option_from_line "$_line")" )
 	done <<<"$(grep -E '^[[:space:]]+menuentry ' /boot/grub/grub.cfg)"
 	for __menuentry in "${_menuentries[@]}"; do
-		# match the first gentoo-dist kernel
-		if [[ ${__menuentry} =~ gentoo-dist-adv ]]; then
+		# match the first gentoo-dist kernel (recent packages are named
+		# gentoo-dist-bin, older ones gentoo-dist)
+		if [[ ${__menuentry} =~ gentoo-dist(-bin)?-advanced- ]]; then
 			_menuentry=${__menuentry}
 			break
 		fi
@@ -1786,28 +1884,7 @@ ConfigureGRUB() {
 }
 
 
-parseParams "$@"
-
-prerequisitesCheck
-firstTip
-
-mkdir -p "${NEWROOT}"
-prerequisitesSolve
-
-setupMirror
-
-getStage3
-unpackStage3ToNEWROOT
-
-prepareChroot
-
-setupGRUBCmdline
-
-preparePkgsConfiguration
-installPortageDB
-installNecessaryPkgs
-
-_config_gentoo() {
+configureGentoo() {
 	local fileForPermitRootLogin fileForAuthorizedKeysFile fileForPasswordAuthentication
 	local patForPermitRootLogin='^[[:space:]]*#?[[:space:]]*PermitRootLogin[[:space:]][[:alpha:]-]+$'
 	local patForAuthorizedKeysFile='^[[:space:]]*#?[[:space:]]*AuthorizedKeysFile[[:space:]][[:alnum:]\./_-]+$'
@@ -1855,7 +1932,7 @@ _config_gentoo() {
 		fi
 	fi
 
-	
+
 	# remove the extra "command" opts from root user's authorized_keys
 	# some distributions set "exit" in the "command" opts
 	sed -Ei 's#(^|,)command=.*[[:space:]](sk-ecdsa-sha2-nistp256@openssh.com|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|sk-ssh-ed25519@openssh.com|ssh-ed25519|ssh-dss|ssh-rsa)# \2#' /root/.ssh/authorized_keys
@@ -1863,37 +1940,37 @@ _config_gentoo() {
 
 	_chroot_exec touch /etc/machine-id
 }
-_config_gentoo
 
+_magic_cp() {
+	echo ">>> Merging /${1} ..."
+	set -- "$_LD_SO" --library-path "${NEWROOT}/lib64" "${NEWROOT}/bin/cp" -a "${NEWROOT}/${1}" /
+	echo ">>>" "${@}"
+	"${@}" || true
+}
 
-_LD_SO=$(ls -d "$NEWROOT"/lib64/ld-linux-*.so*)
-if [[ ! -x ${_LD_SO} ]] || [[ $(${_LD_SO} --version | head -1 | cut -d' ' -f1) != "ld.so" ]]; then
-	_log ee "cannot find ld.so from ${NEWROOT}/lib64/ld-linux-*.so*"
-fi
+switchToGentoo() {
+	_LD_SO=$(ls -d "$NEWROOT"/lib64/ld-linux-*.so*)
+	if [[ ! -x ${_LD_SO} ]] || [[ $(${_LD_SO} --version | head -1 | cut -d' ' -f1) != "ld.so" ]]; then
+		_log ee "cannot find ld.so from ${NEWROOT}/lib64/ld-linux-*.so*"
+	fi
 
-WAIT=5
-echo
-echo
-_log w "Following actions will affect the real system."
-echo -en "Starting in: \e[33m\e[1m"
-while [[ ${WAIT} -gt 0 ]]; do
-	echo -en "${WAIT} "
-	WAIT=$((${WAIT} -  1))
-	sleep 1
-done
-echo -e "\e[0m"
+	echo
+	echo
+	_log w "Following actions will affect the real system."
+	confirm_or_abort
+	countdown "Starting in: " 5
 
-_log w "Installing Grub ..."
-installGRUB
-sync
+	_log w "Installing Grub ..."
+	installGRUB
+	sync
 
-if [[ ${_D2G_BTRFS_ENABLED} == 1 ]]; then
-	prepareBtrfsStuffs
-fi
+	if [[ ${_D2G_BTRFS_ENABLED} == 1 ]]; then
+		prepareBtrfsStuffs
+	fi
 
-_log w "Deleting old system files ..."
-set -x
-${_LD_SO} --library-path "${NEWROOT}/lib64" "${NEWROOT}/usr/bin/find" / \( ! -path '/' \
+	_log w "Deleting old system files ..."
+	set -x
+	${_LD_SO} --library-path "${NEWROOT}/lib64" "${NEWROOT}/usr/bin/find" / \( ! -path '/' \
 	-and ! -regex '/boot.*' \
 	-and ! -regex '/dev.*' \
 	-and ! -regex '/home.*' \
@@ -1908,28 +1985,19 @@ ${_LD_SO} --library-path "${NEWROOT}/lib64" "${NEWROOT}/usr/bin/find" / \( ! -pa
 	-and ! -regex "${EFIMNT:-/4f49e86d-275b-4766-94a9-8ea680d5e2de}.*" \
 	-and ! -regex "${NEWROOT}.*" \) \
 	-delete || true
-set +x
+	set +x
 
-${_LD_SO} --library-path "${NEWROOT}/lib64" "${NEWROOT}/bin/ls" -l / || true
+	${_LD_SO} --library-path "${NEWROOT}/lib64" "${NEWROOT}/bin/ls" -l / || true
 
-_magic_cp() {
-	echo ">>> Merging /${1} ..."
-	set -- "$_LD_SO" --library-path "${NEWROOT}/lib64" "${NEWROOT}/bin/cp" -a "${NEWROOT}/${1}" /
-	echo ">>>" "${@}"
-	"${@}" || true
+	_magic_cp bin
+	_magic_cp sbin
+	_magic_cp etc
+	_magic_cp lib
+	_magic_cp lib64
+	_magic_cp usr
+	_magic_cp var
 }
-_magic_cp bin
-_magic_cp sbin
-_magic_cp etc
-_magic_cp lib
-_magic_cp lib64
-_magic_cp usr
-_magic_cp var
 
-. /etc/profile
-sync
-
-_D2G_ALL_UMOUNTED=1
 _umount_fs() {
 	local tries=3
 	__umount() {
@@ -1963,75 +2031,125 @@ _umount_fs() {
 		sleep 3
 	done
 }
-_umount_fs /proc
-_umount_fs /dev
-_umount_fs /sys
-_umount_fs /run
-_umount_fs /boot
-if [[ -n $EFIMNT ]]; then
-	_umount_fs "$EFIMNT"
-fi
-if [[ $_D2G_ALL_UMOUNTED == 1 ]]; then
-	_log i "removing ${NEWROOT} ..."
-	rm -rf "$NEWROOT" || true
-fi
 
-ConfigureGRUB || true
+cleanupMounts() {
+	_D2G_ALL_UMOUNTED=1
+	_umount_fs /proc
+	_umount_fs /dev
+	_umount_fs /sys
+	_umount_fs /run
+	_umount_fs /boot
+	if [[ -n $EFIMNT ]]; then
+		_umount_fs "$EFIMNT"
+	fi
+	if [[ $_D2G_ALL_UMOUNTED == 1 ]]; then
+		_log i "removing ${NEWROOT} ..."
+		rm -rf "$NEWROOT" || true
+	fi
+}
 
-_log i "Syncing ..."
+printFinishSummary() {
+	_log w "Finished!"
+	echo
+	echo
+	(
+		. /etc/default/grub
+		_log n "        GRUB_CMDLINE_LINUX: '${GRUB_CMDLINE_LINUX}'"
+		_log n "GRUB_CMDLINE_LINUX_DEFAULT: '${GRUB_CMDLINE_LINUX_DEFAULT}'"
+	)
+	_log w "Unparsed         GRUB_CMDLINE_LINUX: '${D2G_UNUNIFIED_GRUB_CMDLINE_LINUX/#[[:space:]]/}'"
+	_log w "Unparsed GRUB_CMDLINE_LINUX_DEFAULT: '${D2G_UNUNIFIED_GRUB_CMDLINE_LINUX_DEFAULT/#[[:space:]]/}'"
+	_log w "The initramfs is generated by dracut by default, please check these opts."
+	echo
+	_log n "  1. Normal users (if exist) have been dropped (but /home directories is preserved)."
+	echo
+	_log n "  2. Old kernels and modules are preserved but are not used by default."
+	echo
+	_log n "  3. 'root' user password is preserved or set to 'distro2gentoo' if it's not set."
+	echo
+	_log n "  4. the /root directory is also preserved (please check the /root/.ssh/authorized_keys file)."
+	echo
+	_log n "  5. SSH server is enabled and will be listening on port 22,"
+	_log n "     it can be connected by root user with password authentication."
+	echo
+	_log n "  run:"
+	_log n "    # . /etc/profile"
+	_log n "  to enter the new environment."
+	echo
+	_log n "  reboot:"
+	_log n "    # reboot -f"
+	_log n "    or"
+	_log n "    # echo b >/proc/sysrq-trigger"
+	_log n "  and Enjoy Gentoo!"
+	echo
+	if [[ $_D2G_ALL_UMOUNTED == 0 ]]; then
+		_log w "You should delete the '$NEWROOT' after reboot manually due to some mountpoints cannot be umounted!"
+		echo
+	fi
+	if [[ $GRUB_CONFIGURED == 0 ]]; then
+		_log e "!!!!!!!!!!!!!!!"
+		_log e "The GRUB bootloader configuration failed!"
+		_log e "You should install a bootloader manually!"
+		_log e "!!!!!!!!!!!!!!!"
+		echo
+	fi
+}
+
+finalize() {
+	cleanupMounts
+
+	configureGRUB || true
+
+	_log i "Syncing ..."
+	sync
+	printFinishSummary
+
+	if [[ ${D2G_COUNTDOWN:-1} != 0 ]]; then
+		local wait_seconds=30
+		_log n "wait to guarantee data synced for some file systems/special environment ..."
+		_log n "  (CTRL-C is safe in most cases)"
+		while [[ ${wait_seconds} -ge 0 ]]; do
+			echo -en "\e[G\e[K  ${wait_seconds} "
+			wait_seconds=$((wait_seconds -  1))
+			sleep 1
+		done
+		echo
+	fi
+}
+
+main() {
+	parseParams "$@"
+
+	prerequisitesCheck
+	firstTip
+
+	mkdir -p "${NEWROOT}"
+	prerequisitesSolve
+
+	setupMirror
+
+	getStage3
+	unpackStage3ToNEWROOT
+
+	prepareChroot
+
+	setupGRUBCmdline
+
+	preparePkgsConfiguration
+	installPortageDB
+	installNecessaryPkgs
+
+	configureGentoo
+
+	switchToGentoo
+}
+
+main "$@"
+
+# Gentoo's /etc/profile (and the scripts it sources) may use a bare `return`,
+# which would leave a caller function early, so this must stay at top level.
+# It also puts the new system's binaries on PATH for configureGRUB below.
+. /etc/profile
 sync
-_log w "Finished!"
-echo
-echo
-(
-	. /etc/default/grub
-	_log n "        GRUB_CMDLINE_LINUX: '${GRUB_CMDLINE_LINUX}'"
-	_log n "GRUB_CMDLINE_LINUX_DEFAULT: '${GRUB_CMDLINE_LINUX_DEFAULT}'"
-)
-_log w "Unparsed         GRUB_CMDLINE_LINUX: '${D2G_UNUNIFIED_GRUB_CMDLINE_LINUX/#[[:space:]]/}'"
-_log w "Unparsed GRUB_CMDLINE_LINUX_DEFAULT: '${D2G_UNUNIFIED_GRUB_CMDLINE_LINUX_DEFAULT/#[[:space:]]/}'"
-_log w "The initramfs is generated by dracut by default, please check these opts."
-echo
-_log n "  1. Normal users (if exist) have been dropped (but /home directories is preserved)."
-echo
-_log n "  2. Old kernels and modules are preserved but are not used by default."
-echo
-_log n "  3. 'root' user password is preserved or set to 'distro2gentoo' if it's not set."
-echo
-_log n "  4. the /root directory is also preserved (please check the /root/.ssh/authorized_keys file)."
-echo
-_log n "  5. SSH server is enabled and will be listening on port 22,"
-_log n "     it can be connected by root user with password authentication."
-echo
-_log n "  run:"
-_log n "    # . /etc/profile"
-_log n "  to enter the new environment."
-echo
-_log n "  reboot:"
-_log n "    # reboot -f"
-_log n "    or"
-_log n "    # echo b >/proc/sysrq-trigger"
-_log n "  and Enjoy Gentoo!"
-echo
-if [[ $_D2G_ALL_UMOUNTED == 0 ]]; then
-	_log w "You should delete the '$NEWROOT' after reboot manually due to some mountpoints cannot be umounted!"
-	echo
-fi
-if [[ $GRUB_CONFIGURED == 0 ]]; then
-	_log e "!!!!!!!!!!!!!!!"
-	_log e "The GRUB bootloader configuration failed!"
-	_log e "You should install a bootloader manually!"
-	_log e "!!!!!!!!!!!!!!!"
-	echo
-fi
 
-WAIT=30
-_log n "wait to guarantee data synced for some file systems/special environment ..."
-_log n "  (CTRL-C is safe in most cases)"
-while [[ $WAIT -ge 0 ]]; do
-	echo -en "\e[G\e[K  $WAIT "
-	WAIT=$((WAIT -  1))
-	sleep 1
-done
-echo
-
+finalize

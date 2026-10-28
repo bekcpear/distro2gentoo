@@ -27,6 +27,13 @@ _uris_from_xml() {
 }
 
 setupMirror() {
+	if [[ -n ${D2G_MIRROR:-} ]]; then
+		MIRROR="$D2G_MIRROR"
+		[[ -n ${D2G_GIT_MIRROR:-} ]] && _D2G_GIT_MIRROR="$D2G_GIT_MIRROR"
+		_log i "Mirror has been preset to '${MIRROR}'."
+		return
+	fi
+
 	_log i "Getting mirror list..."
 
 	set +e
@@ -64,28 +71,33 @@ setupMirror() {
 			_log n "    [${i}] ${uri}"
 		fi
 	done
-	mirrors_arr+=( "CUSTOM" )
-	_log n "    [${i}] <Enter custom URL>"
-	while [[ ${#mirrors_arr[@]} -gt 0 ]]; do
-		read -r -p "Choose prefered mirror (enter the num, empty for default): " selected
-		[[ -n ${selected} ]] || break
-		if [[ ${selected} =~ ^[[:digit:]]+$ ]] && [[ -n ${mirrors_arr[${selected}]} ]]; then
-			MIRROR=${mirrors_arr[${selected}]}
-			break;
-		else
-			_log w "out of range!"
-		fi
-	done
-	if [[ ${MIRROR} == CUSTOM ]]; then
-		_set_custom_mirror() {
-			read -r -p "Enter your custom URL: " MIRROR
-			if [[ ! ${MIRROR} =~ ^(http[s]?|ftp):// ]]; then
-				_log e "Please use http[s] or ftp URL."
-				_set_custom_mirror
+	if [[ ${D2G_NONINTERACTIVE:-0} != 1 ]]; then
+		mirrors_arr+=( "CUSTOM" )
+		_log n "    [${i}] <Enter custom URL>"
+		while [[ ${#mirrors_arr[@]} -gt 0 ]]; do
+			read -r -p "Choose prefered mirror (enter the num, empty for default): " selected
+			[[ -n ${selected} ]] || break
+			if [[ ${selected} =~ ^[[:digit:]]+$ ]] && [[ -n ${mirrors_arr[${selected}]} ]]; then
+				MIRROR=${mirrors_arr[${selected}]}
+				break;
+			else
+				_log w "out of range!"
 			fi
-		}
-		_set_custom_mirror
+		done
+		if [[ ${MIRROR} == CUSTOM ]]; then
+			_set_custom_mirror() {
+				read -r -p "Enter your custom URL: " MIRROR
+				if [[ ! ${MIRROR} =~ ^(http[s]?|ftp):// ]]; then
+					_log e "Please use http[s] or ftp URL."
+					_set_custom_mirror
+				fi
+			}
+			_set_custom_mirror
+		fi
+	else
+		_log i "Non-interactive mode, using the default mirror '${MIRROR:-<empty>}'."
 	fi
+	[[ -n ${D2G_GIT_MIRROR:-} ]] && _D2G_GIT_MIRROR="$D2G_GIT_MIRROR"
 	if [[ -z ${MIRROR} ]]; then
 		MIRROR="https://gentoo.osuosl.org/"
 	fi

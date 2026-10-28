@@ -6,10 +6,6 @@
    **********************************
 ```
 
-_If something is wrong, try the old version, which was before the refactor:_
-
-https://gitlab.com/cwittlut/distro2gentoo/-/blob/f6ae4a61490259018a423361dae74617cff3a173/distro2gentoo.sh
-
 #### How to run
 
 ```bash
@@ -17,6 +13,9 @@ https://gitlab.com/cwittlut/distro2gentoo/-/blob/f6ae4a61490259018a423361dae7461
 # Usage: distro2gentoo [<options>]
 #
 # options:
+#
+#   --yyy                   Skip all interactive confirmations (assume yes),
+#                           use defaults; for unattended/automated runs
 #
 #   --disable-binhost       Disable the binhost when installing Gentoo
 #
@@ -46,6 +45,45 @@ https://gitlab.com/cwittlut/assets/-/raw/main/distro2gentoo-demo.mp4
 8. All actions won't affect the real system before the *'Following actions will affect the real system.'* log appears.
 9. If you want to re-run this script before the real system affected, execute `umount -R /root.d2g.<arch>/*; rm -r /root.d2g.<arch>` first.
 
+#### Tested environments
+
+Conversion correctness is covered by an automated end-to-end suite
+([`tests/qemu/`](tests/qemu/README.md)): each distribution boots in a
+disposable QEMU virtual machine, runs this script non-interactively, is
+hard-rebooted into Gentoo and verified over SSH (16–18 assertions). The
+harness runs on **Linux (KVM)** and **macOS (HVF)**; cross-arch hosts
+fall back to QEMU TCG software emulation.
+
+**aarch64 — 14/14 cases PASS** (recorded on macOS / Apple Silicon with
+HVF; the same cases run unchanged on aarch64 Linux + KVM):
+
+| host distribution | root filesystem | Gentoo targets |
+|---|---|---|
+| Debian 12 | ext4, btrfs | OpenRC, systemd |
+| Ubuntu 24.04 | ext4 | OpenRC, systemd |
+| Fedora 44 | btrfs | OpenRC, systemd |
+| Arch Linux ARM | ext4, btrfs | OpenRC, systemd |
+| openSUSE Tumbleweed | btrfs (snapper) | OpenRC, systemd |
+
+**x86_64 (amd64) — 14 cases prepared (same matrix as aarch64), run
+pending.** Four stock cloud goldens (Debian 12, Ubuntu 24.04, Fedora 44,
+Arch Linux) plus three hand-built btrfs goldens (Debian, openSUSE
+Tumbleweed Minimal-VM, Arch) cover both OpenRC and systemd targets. The
+intended platform is a native x86_64 Linux + KVM host; on Apple Silicon
+x86_64 only has slow TCG, which misses the SSH readiness window.
+
+Run the tests:
+
+```bash
+make
+D2G_ARCH=aarch64 bash tests/qemu/golden/fetch.sh   # stock cloud images
+D2G_ARCH=aarch64 bash tests/qemu/run.sh            # full matrix
+```
+
+See [`tests/TESTING.md`](tests/TESTING.md) for the current status and
+[`tests/qemu/README.md`](tests/qemu/README.md) for host requirements
+(Linux/macOS), golden-image preparation and configuration overrides.
+
 
 #### 说明（Description - Chinese）
 
@@ -61,4 +99,42 @@ https://gitlab.com/cwittlut/assets/-/raw/main/distro2gentoo-demo.mp4
 7. 启动器是 GRUB2。
 8. 在 *'Following actions will affect the real system.'* 日志出现之前，所有的操作都不会影响到真实的系统环境。
 9. 如果你打算在真实系统被影响前重新执行此脚本，那么先执行 `umount -R /root.d2g.<架构>/*; rm -r /root.d2g.<架构>` 。
+
+#### 测试环境（Tested environments - Chinese）
+
+转换的正确性由一套自动化端到端测试（[`tests/qemu/`](tests/qemu/README.md)）
+覆盖：各发行版在一次性 QEMU 虚拟机中启动，以非交互方式执行本脚本，
+随后硬重启进入 Gentoo，并通过 SSH 做 16–18 项断言验证。测试框架在
+**Linux（KVM）** 和 **macOS（HVF）** 下均可运行；跨架构时自动回退到
+QEMU TCG 软件模拟。
+
+**aarch64 —— 14/14 用例通过**（在 macOS / Apple Silicon + HVF 下实测
+记录；同样的用例在 aarch64 Linux + KVM 上无需改动即可运行）：
+
+| 宿主发行版 | 根文件系统 | Gentoo 目标 |
+|---|---|---|
+| Debian 12 | ext4、btrfs | OpenRC、systemd |
+| Ubuntu 24.04 | ext4 | OpenRC、systemd |
+| Fedora 44 | btrfs | OpenRC、systemd |
+| Arch Linux ARM | ext4、btrfs | OpenRC、systemd |
+| openSUSE Tumbleweed | btrfs（snapper） | OpenRC、systemd |
+
+**x86_64（amd64）—— 已备好与 aarch64 相同的 14 个用例，尚未实际跑完。**
+四个官方云镜像 golden（Debian 12、Ubuntu 24.04、Fedora 44、Arch
+Linux）加三个手工构建的 btrfs golden（Debian、openSUSE Tumbleweed
+Minimal-VM、Arch），覆盖 OpenRC 与 systemd 两种目标。推荐在原生
+x86_64 Linux + KVM 主机上执行；Apple Silicon 上 x86_64 只能用较慢的
+TCG 模拟，无法在 SSH 等待窗口内完成启动。
+
+运行测试：
+
+```bash
+make
+D2G_ARCH=aarch64 bash tests/qemu/golden/fetch.sh   # 官方云镜像
+D2G_ARCH=aarch64 bash tests/qemu/run.sh            # 完整测试矩阵
+```
+
+当前状态见 [`tests/TESTING.md`](tests/TESTING.md)；主机环境要求
+（Linux/macOS）、golden 镜像准备方法和可覆盖的配置项见
+[`tests/qemu/README.md`](tests/qemu/README.md)。
 

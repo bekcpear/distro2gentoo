@@ -9,6 +9,8 @@ Usage: distro2gentoo [<options>]
 
 options:
 
+	--yyy                   Answer yes to every confirmation, skip all
+	                        interactive prompts and use defaults (unattended)
 	--disable-binhost       Disable the binhost when installing Gentoo
 	-h, --help              Show this help
 "
@@ -37,6 +39,49 @@ gpgVerifyDetachedFile() {
 	_gpg --verify "$2" "$1"
 }
 
+# Print a bold-yellow N..1 countdown on a single line.
+# $1: message printed before the numbers
+# $2: seconds to count
+countdown() {
+	local seconds=$2
+	if [[ ${D2G_COUNTDOWN:-1} == 0 ]]; then
+		echo "${1}(skipped)"
+		return
+	fi
+	echo -en "$1\e[33m\e[1m"
+	while (( seconds > 0 )); do
+		echo -en "${seconds} "
+		seconds=$((seconds - 1))
+		sleep 1
+	done
+	echo -e "\e[0m"
+}
+
+# Interactive y/N gate. With --yyy (D2G_ASSUME_YES=1) it proceeds
+# with the default automatically. Otherwise the user must answer y/Y to
+# continue; anything else (including empty input -> default N) aborts.
+# $1: prompt line(s) already printed by the caller
+confirm_or_abort() {
+	if [[ ${D2G_ASSUME_YES:-0} == 1 || ${D2G_NONINTERACTIVE:-0} == 1 ]]; then
+		return 0
+	fi
+	# Only prompt when running interactively (stdin is a real TTY).
+	# Under ssh-without-a-tty / pipes / CI there is nobody to answer;
+	# treat that as non-interactive and proceed with the defaults.
+	if [[ ! -t 0 ]]; then
+		return 0
+	fi
+	local _reply=""
+	read -r -p "$(printf 'Proceed? [y/N]: ')" _reply || true
+	case $_reply in
+		y|Y) return 0 ;;
+		*)
+			_log ee "Aborted by user."
+			return 1
+			;;
+	esac
+}
+
 firstTip() {
 	echo
 	_log n "    1. This script won't format disks,"
@@ -47,13 +92,7 @@ firstTip() {
 	echo
 	_log n "  To avoid rebooting without privileges, make sure at least one interactive shell with root privileges is active."
 	echo
-	WAIT=5
-	echo -en "Starting in: \e[33m\e[1m"
-	while [[ ${WAIT} -gt 0 ]]; do
-		echo -en "${WAIT} "
-		WAIT=$((WAIT -  1))
-		sleep 1
-	done
-	echo -e "\e[0m"
+	confirm_or_abort
+	countdown "Starting in: " 5
 }
 

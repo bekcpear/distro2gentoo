@@ -16,7 +16,10 @@ getStage3() {
 	download "$stage3_list_url" "${local_stage3_list}.with-gpg-signature"
 	gpgDecryptAndOutput "${local_stage3_list}.with-gpg-signature" "$local_stage3_list"
 
-	while read -r relative_path stage3_size _; do
+	# the list's last data line may have no trailing newline; a plain
+	# `while read` would silently drop it, so also process a final partial
+	# read (read returns non-zero but still fills the variables)
+	while read -r relative_path stage3_size _ || [[ -n $relative_path ]]; do
 		if [[ $relative_path =~ ^[[:space:]]*#|^[[:space:]]*$ ]]; then
 			continue
 		fi
@@ -47,23 +50,37 @@ getStage3() {
 		_log ee "No stage3 list, please check the mirror URL or your network."
 	fi
 
-	while :; do
-		read -r -p "Choose prefered stage3 tarball (enter the num, empty for the default): " selected_stage3_tmp
-		if [[ -z ${selected_stage3_tmp} ]]; then
-			if [[ $selected_stage3 == "" || -z $selected_stage3 ]]; then
-				_log e "No default stage3 selected, please select one!"
-			else
-				_log i "Use the default stage3."
+	if [[ -n ${D2G_STAGE3_REGEX:-} ]]; then
+		local _si _stage3_matched=0
+		for (( _si=0; _si<${#stage3s_names[@]}; _si++ )); do
+			if [[ ${stage3s_names[_si]} =~ $D2G_STAGE3_REGEX ]]; then
+				selected_stage3=$_si
+				_stage3_matched=1
 				break
 			fi
-		fi
-		if [[ ${selected_stage3_tmp} =~ ^[[:digit:]]+$ ]] && [[ -n ${stage3s_names[${selected_stage3_tmp}]} ]]; then
-			selected_stage3=${selected_stage3_tmp}
-			break;
-		else
-			_log e "Out of range, please select a valid one!"
-		fi
-	done
+		done
+		(( _stage3_matched )) || _log ee "No stage3 tarball matches regex '${D2G_STAGE3_REGEX}'."
+	elif [[ ${D2G_NONINTERACTIVE:-0} == 1 ]]; then
+		[[ -n $selected_stage3 ]] || _log ee "No default stage3 tarball available."
+	else
+		while :; do
+			read -r -p "Choose prefered stage3 tarball (enter the num, empty for the default): " selected_stage3_tmp
+			if [[ -z ${selected_stage3_tmp} ]]; then
+				if [[ $selected_stage3 == "" || -z $selected_stage3 ]]; then
+					_log e "No default stage3 selected, please select one!"
+				else
+					_log i "Use the default stage3."
+					break
+				fi
+			fi
+			if [[ ${selected_stage3_tmp} =~ ^[[:digit:]]+$ ]] && [[ -n ${stage3s_names[${selected_stage3_tmp}]} ]]; then
+				selected_stage3=${selected_stage3_tmp}
+				break;
+			else
+				_log e "Out of range, please select a valid one!"
+			fi
+		done
+	fi
 
 	_log i "selected stage3: ${stage3s_names[${selected_stage3}]}"
 

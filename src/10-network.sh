@@ -11,6 +11,17 @@ configNetwork() {
 	local -a _netdev _netproto _netdst _netgateway _netdev6 _netproto6 _netdst6 _netgateway6
 	local _ __dst __via __gateway __dev __proto
 
+	# Newer iproute2 (>=6.x) prints nexthop routes as
+	#   "default nhid 123 via fe80::2 dev enp0s3 proto ra ..."
+	# followed by an indented "nh_info ..." continuation line. The
+	# positional field parsing below expects the classic
+	#   "default via fe80::2 dev enp0s3 ..."
+	# layout; drop the nhid token and continuation lines so both shapes
+	# parse identically.
+	_normalize_routes() {
+		sed -E -e '/^[[:space:]]/d' -e 's/[[:space:]]+nhid[[:space:]]+[0-9]+//g'
+	}
+
 	_with_high_priority() {
 		local __first=${_dev_prefix_priority[${1:0:4}]:-${_dev_prefix_priority[${1:0:3}]:-${_dev_prefix_priority[${1:0:2}]:-0}}}
 		local __second=${_dev_prefix_priority[${2:0:4}]:-${_dev_prefix_priority[${2:0:3}]:-${_dev_prefix_priority[${2:0:2}]:-0}}}
@@ -63,12 +74,12 @@ configNetwork() {
 			_with_high_priority "${__dev}" "${_netdev[0]}"; then
 			_assign_primary_net "${__dev}" "${__gateway}" "${__proto}"
 		fi
-	done<<<"$(ip -d -o route show type unicast to default)"
+	done<<<"$(ip -d -o route show type unicast to default | _normalize_routes)"
 
 	# ipv4 extra route/device
 	while read -r _ __dst __via __gateway _ __dev _ __proto _; do
 		_assign_extra_net "${__dst}" "${__via}" "${__gateway}" "${__dev}" "${__proto}" ""
-	done<<<"$(ip -d -o route show type unicast)"
+	done<<<"$(ip -d -o route show type unicast | _normalize_routes)"
 
 	# ipv6 default route/device
 	_assign_primary_net6() {
@@ -82,12 +93,12 @@ configNetwork() {
 			_with_high_priority "${__dev}" "${_netdev6[0]}"; then
 			_assign_primary_net6 "${__dev}" "${__gateway}" "${__proto}"
 		fi
-	done<<<"$(ip -6 -d -o route show type unicast to default)"
+	done<<<"$(ip -6 -d -o route show type unicast to default | _normalize_routes)"
 
 	# ipv6 extra route/device
 	while read -r _ __dst __via __gateway _ __dev _ __proto _; do
 		_assign_extra_net "${__dst}" "${__via}" "${__gateway}" "${__dev}" "${__proto}" 6
-	done<<<"$(ip -6 -d -o route show type unicast | grep -Ev '^unicast[[:space:]]+fe80::')"
+	done<<<"$(ip -6 -d -o route show type unicast | _normalize_routes | grep -Ev '^unicast[[:space:]]+fe80::')"
 
 	local -a _dev _proto _proto6 _dst _dst6 _gateway _gateway6
 
@@ -219,10 +230,39 @@ configNetwork() {
 		fi
 
 		###
-		__dev=$(_the_correct_dev_name "${__dev}")
-		if [[ ${__dev} =~ ^LEGACY ]]; then
-			__dev=${__dev#LEGACY}
+		# Choose the interface name the converted Gentoo system will use.
+		#
+		# A cloud host can rename a NIC away from the hardware-derived
+		# predictable name: cloud-init/netplan persist a "set-name" taken
+		# during first boot (observed: a hand-built btrfs golden kept
+		# enp0s4 via /run/systemd/network/10-netplan-*.link even though the
+		# card sits at PCI 0000:00:03.0). Gentoo has no such override and
+		# uses the systemd/udev default policy, whose stable "path" name
+		# depends only on the PCI location and is identical under every
+		# kernel. So, in priority order:
+		#   1. ID_NET_NAME_PATH from udev (hardware PCI path) -> use it;
+		#   2. if the host name already equals that path name -> keep it;
+		#   3. fallback: nothing usable, bind by MAC and pin eth<index>.
+		local __mac __pathname __gname
+		__mac=$(cat "/sys/class/net/${__dev}/address" 2>/dev/null)
+		__pathname=$(udevadm info "/sys/class/net/${__dev}" 2>/dev/null \
+			| awk -F= '/^E: ID_NET_NAME_PATH=/{print $2; exit}')
+		local __netifrc_mac=""
+		if [[ -n $__pathname ]]; then
+			# Hardware path name is what Gentoo's default policy yields.
+			__dev=$__pathname
+		elif [[ -z $__mac ]]; then
+			__dev=$(_the_correct_dev_name "${__dev}")
+			if [[ ${__dev} =~ ^LEGACY ]]; then
+				__dev=${__dev#LEGACY}
+				D2G_GRUB_CMDLINE_LINUX+=" net.ifnames=0"
+			fi
+		else
+			# Last resort: no udev path info; rename by MAC to eth<index>.
+			__gname="eth${_i}"
+			__dev=$__gname
 			D2G_GRUB_CMDLINE_LINUX+=" net.ifnames=0"
+			__netifrc_mac="mac_${__dev}=\"${__mac}\""
 		fi
 
 		###
@@ -236,8 +276,12 @@ configNetwork() {
 			__networkd="" \
 			__netifrc_config="config_${__dev}=\"" \
 			__netifrc_routes="routes_${__dev}=\"" \
-			__netifrc="" \
-			__networkd_match+=$'\n'"Name=${__dev}"
+			__netifrc=""
+		# Always also match on MAC so the config survives any naming drift.
+		if [[ -n $__mac ]]; then
+			__networkd_match+=$'\n'"MACAddress=${__mac}"
+		fi
+		__networkd_match+=$'\n'"Name=${__dev}"
 
 		###
 		for ___ip in "${__ip[@]}"; do
@@ -294,7 +338,11 @@ configNetwork() {
 		fi
 		__netifrc_config+=$'\n'"\""
 		__netifrc_routes+=$'\n'"\""
-		__netifrc="${__netifrc_config}"$'\n'"${__netifrc_routes}"
+		if [[ -n $__netifrc_mac ]]; then
+			__netifrc="${__netifrc_mac}"$'\n'"${__netifrc_config}"$'\n'"${__netifrc_routes}"
+		else
+			__netifrc="${__netifrc_config}"$'\n'"${__netifrc_routes}"
+		fi
 
 		mkdir -p "${NEWROOT}/etc/systemd/network"
 		mkdir -p "${NEWROOT}/etc/conf.d"

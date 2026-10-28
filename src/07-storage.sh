@@ -3,19 +3,8 @@
 # License: GPL-2
 #
 
-declare -a _D2G_FS_SOURCES _D2G_FS_MOUNTPOINTS _D2G_FS_TYPES _D2G_FS_OPTS
-
-_D2G_LVM_ENABLED=0
-declare -a _D2G_LVM_LVS _D2G_LVM_LVS_MOUNTPOINTS
-
-_D2G_LUKS_ENABLED=0
-declare -a _D2G_LUKS_PARTS _D2G_LUKS_PARTS_MOUNTPOINTS _D2G_LUKS_PARTS_PARENTS
-
-_D2G_BTRFS_ENABLED=0
-_D2G_BTRFS_SUBVOL_ROOTFS=""
-declare -a _D2G_BTRFS_MOUNTPOINTS _D2G_BTRFS_SUBVOLS _D2G_BTRFS_OPTS
-
-# TODO, the above variables are scattered throughout different scripts, improve it
+# All storage detection state (_D2G_FS_*, _D2G_LVM_*, _D2G_LUKS_*,
+# _D2G_BTRFS_*) is declared globally in 00-pre.sh.
 
 _analyze_mnt() {
 	local _name _source _mp __mp _type _opts
@@ -73,6 +62,8 @@ _analyze_mnt() {
 
 prepareBtrfsStuffs() {
 	# detect btrfs readonly subvol
+	local -a __subvol_path_readonlys
+	local __subvol_path __subvol_path_remaining __subvol_path_readonly i
 	while read -r _ _ _ _ _ _ _ _ __subvol_path; do
 		for (( i = 0; i < ${#_D2G_BTRFS_SUBVOLS[@]}; ++i )); do
 			__subvol_path=${__subvol_path#<FS_TREE>}

@@ -3,8 +3,6 @@
 # License: GPL-2
 #
 
-declare -a _D2G_DRACUT_MODULES _D2G_ONETIME_PKGS _D2G_EXTRA_DEPS
-
 _D2G_BINPKGS_PROFILE_VER="23.0"
 
 _D2G_BINPKGS_CATEGORIES_AMD64_DEFAULT=1
@@ -142,6 +140,7 @@ sync-git-verify-commit-signature = yes
 installNecessaryPkgs() {
 	local _nproc emerge_opts=("--autounmask=y" "--autounmask-license=y" "--autounmask-use=y" "--autounmask-write=y" "--autounmask-continue=y" "-vj")
 	_nproc=$(nproc)
+
 
 	if (( ${#_D2G_ONETIME_PKGS[@]} > 0 )); then
 		_chroot_exec env DONT_MOUNT_BOOT=1 emerge -l "$_nproc" -1 "${emerge_opts[@]}" "${_D2G_BINHOST_ARGS[@]}" "${_D2G_ONETIME_PKGS[@]}"

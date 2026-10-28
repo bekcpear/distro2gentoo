@@ -229,9 +229,19 @@ installGRUB() {
 	sed -i "/GRUB_DEFAULT=/aGRUB_DEFAULT=\"saved\"" "${NEWROOT}/etc/default/grub"
 	echo $'\n'"GRUB_DISABLE_OS_PROBER=false" >>"${NEWROOT}/etc/default/grub"
 
-	# keep the old /boot dir or mountpoint
-	cp -a "${NEWROOT}"/boot/* /boot/
-	mount --bind /boot "${NEWROOT}/boot"
+	# Publish the stage3's /boot artifacts to the host /boot (which the
+	# delete phase preserves). First release the ESP that
+	# prepareBootMounts bind-mounted under NEWROOT/boot, then copy without
+	# crossing filesystems (-x) and rbind /boot so the real ESP propagates
+	# back into the chroot. A separate host /boot partition is already
+	# bind-mounted at NEWROOT/boot and needs none of this.
+	if ! mountpoint -q "${NEWROOT}/boot"; then
+		if [[ -n $EFIMNT && $EFIMNT == /boot/* ]]; then
+			umount "${NEWROOT}${EFIMNT}" 2>/dev/null || true
+		fi
+		cp -ax "${NEWROOT}/boot/." /boot/
+		_do mount --rbind /boot "${NEWROOT}/boot"
+	fi
 
 	# find the boot device
 	if [[ ${CPUARCH} =~ amd64 ]]; then
@@ -322,7 +332,10 @@ installGRUB() {
 				fi
 			fi
 			mkdir -p "${NEWROOT}${EFIMNT}"
-			_do mount "${efi_dev}" "${NEWROOT}${EFIMNT}"
+			# prepareBootMounts may already have bind-mounted the host ESP here
+			if ! mountpoint -q "${NEWROOT}${EFIMNT}"; then
+				_do mount "${efi_dev}" "${NEWROOT}${EFIMNT}"
+			fi
 			if [[ ${CPUARCH} == amd64 ]]; then
 				local _target="x86_64-efi"
 			else
@@ -381,7 +394,7 @@ _get_menuentry_id_option_from_line() {
 	fi
 }
 
-ConfigureGRUB() {
+configureGRUB() {
 	local _submenu _menuentry __menuentry _line
 	local -a _menuentries
 
@@ -393,8 +406,9 @@ ConfigureGRUB() {
 		_menuentries+=( "$(_get_menuentry_id_option_from_line "$_line")" )
 	done <<<"$(grep -E '^[[:space:]]+menuentry ' /boot/grub/grub.cfg)"
 	for __menuentry in "${_menuentries[@]}"; do
-		# match the first gentoo-dist kernel
-		if [[ ${__menuentry} =~ gentoo-dist-adv ]]; then
+		# match the first gentoo-dist kernel (recent packages are named
+		# gentoo-dist-bin, older ones gentoo-dist)
+		if [[ ${__menuentry} =~ gentoo-dist(-bin)?-advanced- ]]; then
 			_menuentry=${__menuentry}
 			break
 		fi
