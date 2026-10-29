@@ -2,6 +2,11 @@
 # Download and prepare the official cloud images.
 # Re-running is safe; existing files of sufficient size are skipped.
 #
+# Usage: fetch.sh [-h] [distro ...]
+# Optional positional arguments restrict the fetch to the named distros
+# (debian, ubuntu, fedora, arch); by default every distro that has an
+# official cloud image for the selected architecture is fetched.
+#
 # Architecture is taken from D2G_ARCH (sourced from config.sh):
 #   aarch64 -> Debian bookworm / Ubuntu noble / Fedora 44 (arm64 images)
 #   x86_64  -> Debian bookworm / Ubuntu noble / Fedora 44 / Arch x86_64 cloud
@@ -11,6 +16,21 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$HERE/config.sh"
 # shellcheck source=../lib/common.sh
 . "$HERE/lib/common.sh"
+
+WANTED=()
+while [[ $# -gt 0 ]]; do
+	case $1 in
+		-h|--help)
+			grep -E '^#( |$)' "$0" | grep -v shellcheck | sed 's/^# \{0,1\}//'
+			echo "distros with an official cloud image ($D2G_ARCH): $(
+				[[ $D2G_ARCH == aarch64 ]] && echo 'debian ubuntu fedora' \
+					|| echo 'debian ubuntu fedora arch')"
+			exit 0 ;;
+		debian|ubuntu|fedora|arch) WANTED+=("$1") ;;
+		*) die "unknown distro '$1' (valid: debian ubuntu fedora arch)" ;;
+	esac
+	shift
+done
 
 # Upstream images are downloaded under their upstream file names into
 # DL_DIR, then converted/resized and promoted into GOLDEN_DIR under the
@@ -103,6 +123,9 @@ verify_sum() { # <key> <file>
 
 for k in debian ubuntu fedora arch; do
 	[[ -n ${URL[$k]:-} ]] || continue
+	if [[ ${#WANTED[@]} -gt 0 ]]; then
+		printf '%s\n' "${WANTED[@]}" | grep -Fxq "$k" || continue
+	fi
 	dl "$k"
 	src="$DL_DIR/$(basename "${URL[$k]}")"
 	verify_sum "$k" "$src"

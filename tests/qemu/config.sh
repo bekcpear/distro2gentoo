@@ -79,13 +79,20 @@ else
 			/usr/share/qemu/aavmf-aarch64-suse-vars.bin \
 			/usr/share/qemu/aavmf-aarch64-vars.bin)}"
 	else
+		# Ubuntu 24.04+ (and GitHub-hosted noble runners) ship only the
+		# 4M-flash OVMF variants; keep the legacy 2M paths first so older
+		# images resolve exactly as before. Code and vars must come from
+		# the same family, which holds because distros ship each family
+		# complete (both 2M files, or both 4M files).
 		FW="${FW:-$(_first_existing \
 			/usr/share/OVMF/OVMF_CODE.fd \
+			/usr/share/OVMF/OVMF_CODE_4M.fd \
 			/usr/share/edk2/ovmf/OVMF_CODE.fd \
 			/usr/share/OVMF/x64/OVMF_CODE.fd \
 			/usr/share/qemu/ovmf-x86_64-code.bin)}"
 		FW_VARS_TEMPLATE="${FW_VARS_TEMPLATE:-$(_first_existing \
 			/usr/share/OVMF/OVMF_VARS.fd \
+			/usr/share/OVMF/OVMF_VARS_4M.fd \
 			/usr/share/edk2/ovmf/OVMF_VARS.fd \
 			/usr/share/OVMF/x64/OVMF_VARS.fd \
 			/usr/share/qemu/ovmf-x86_64-vars.bin)}"
@@ -151,6 +158,10 @@ BASE_SSH_PORT="${BASE_SSH_PORT:-2230}"
 BASE_MON_PORT="${BASE_MON_PORT:-2330}"
 # wall-clock cap for one short ssh probe (conversion channel overrides)
 : "${D2G_SSH_TIMEOUT:=30}"
+# status heartbeat interval (seconds) during long silent phases; the
+# conversion streams into conversion.log only, so run.sh prints elapsed
+# time plus the last guest output line at this cadence
+: "${D2G_STATUS_INTERVAL:=300}"
 
 # conversion mirror used inside guests
 D2G_MIRROR="${D2G_TEST_MIRROR:-https://mirrors.bfsu.edu.cn/gentoo}"

@@ -1,0 +1,119 @@
+name: E2E Ubuntu AMD64
+
+# QEMU/KVM end-to-end conversion tests on GitHub-hosted x64 runners
+# (standard Linux x64 runners expose /dev/kvm via nested virtualization).
+# Scope: the two Ubuntu 24.04 x86_64 cases — 03 (to Gentoo OpenRC) and
+# 04 (to Gentoo systemd) — on every trigger.
+#   - pull_request / push to dev:  only for changes under src/tests/
+#                                  Makefile or this workflow (doc-only
+#                                  changes skip the e2e run)
+#   - workflow_dispatch/schedule:  unconditionally
+# aarch64 is intentionally not covered: GitHub arm64 runners have no KVM
+# and TCG is too slow for a conversion (tests/qemu/README.md §8).
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - src/**
+      - tests/**
+      - Makefile
+      - .github/workflows/e2e-ubuntu-x86_64.yml
+  pull_request:
+    paths:
+      - src/**
+      - tests/**
+      - Makefile
+      - .github/workflows/e2e-ubuntu-x86_64.yml
+  workflow_dispatch:
+  schedule:
+    - cron: '0 18 * * 5' # Fridays 18:00 UTC
+
+# One heavy e2e run per trigger kind and ref; a newer push / PR update
+# cancels its stale run. Including event_name keeps a scheduled run on
+# dev from cancelling (or being cancelled by) a push-triggered one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ubuntu-amd64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      D2G_ARCH: x86_64
+      D2G_TEST_MIRROR: https://gentoo.osuosl.org
+      D2G_TEST_GIT_MIRROR: https://github.com/gentoo-mirror/gentoo.git
+      RESULTS_ROOT: /mnt/d2g-results
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Enable KVM for the runner user
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+          df -h / /mnt
+
+      - name: Prepare results directory on /mnt
+        run: |
+          # /mnt is root-owned on hosted runners; run.sh writes there as
+          # the unprivileged 'runner' user.
+          sudo mkdir -p "$RESULTS_ROOT"
+          sudo chown "$(id -u):$(id -g)" "$RESULTS_ROOT"
+          ls -ld "$RESULTS_ROOT"
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 qemu-utils ovmf genisoimage netcat-openbsd
+
+      - name: Build distro2gentoo.sh
+        run: make rebuild
+
+      - name: Generate the test SSH key
+        run: |
+          mkdir -p tests/qemu/assets
+          ssh-keygen -t ed25519 -N '' -C d2g-ci -f tests/qemu/assets/id_ed25519
+
+      - name: Fetch the Ubuntu golden image
+        run: |
+          bash tests/qemu/golden/fetch.sh ubuntu
+          test -s tests/qemu/assets/golden/x86_64/ubuntu-noble-ext4-amd64.qcow2
+
+      - name: Check QEMU/firmware/accelerator resolution
+        run: |
+          # config.sh assignments can return non-zero when a firmware
+          # candidate list is empty; the explicit checks below report it.
+          . tests/qemu/config.sh || true
+          echo "qemu:  $QEMU_BIN ($D2G_ACCEL, -cpu $D2G_CPU)"
+          echo "fw:    $FW"
+          echo "vars:  $FW_VARS_TEMPLATE"
+          [[ -n ${FW:-} && -f ${FW:-} ]] || { echo "UEFI firmware not found" >&2; exit 1; }
+          [[ -n ${FW_VARS_TEMPLATE:-} && -f ${FW_VARS_TEMPLATE:-} ]] \
+            || { echo "UEFI vars template not found" >&2; exit 1; }
+          [[ ${D2G_ACCEL:-} == kvm ]] || { echo "/dev/kvm is not usable" >&2; exit 1; }
+
+      - name: Run conversion cases
+        run: |
+          bash tests/qemu/run.sh -j 1 \
+            03-ubuntu-ext4-systemd-to-gentoo-openrc \
+            04-ubuntu-ext4-systemd-to-gentoo-systemd
+
+      # Overlays are throwaway 15 GB qcow2 files; keep logs for artifacts.
+      # Guarded: the dir may not exist if the job failed before run.sh.
+      - name: Drop disk images from results
+        if: always()
+        run: find /mnt/d2g-results -name '*.qcow2' -delete || true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: results-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /mnt/d2g-results/
+          if-no-files-found: warn

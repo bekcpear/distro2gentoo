@@ -27,7 +27,9 @@ done
 [[ -f $REPO_ROOT/distro2gentoo.sh ]] || die "distro2gentoo.sh not built yet; run 'make' in the repo root"
 RUN_ID="$(date +%Y%m%d-%H%M%S)"
 RUN_DIR="$RESULTS_ROOT/$RUN_ID"
-mkdir -p "$RUN_DIR"
+# fail loudly here; without the run dir every later mkdir (per-case dir,
+# lock dir) fails too and reports misleading "stale lock" errors instead
+mkdir -p "$RUN_DIR" || die "cannot create run dir '$RUN_DIR'"
 
 # load cases, names determine stable port indices
 mapfile -t ALL_CASES < <(ls "$CASES_DIR"/*.conf | sort)
@@ -115,9 +117,27 @@ EOF
 
 	phase="convert"
 	say "[$NAME] running distro2gentoo (this is the long phase, up to ${RUN_TIMEOUT}s)"
-	# conversion legitimately runs for tens of minutes; lift the ssh cap
-	if ! D2G_SSH_TIMEOUT="$RUN_TIMEOUT" vm_ssh "$ssh_port" -- 'bash /root/d2g-runner.sh 2>&1 | tee /root/d2g-run.log' \
-			>"$dir/conversion.log" 2>&1; then
+	# conversion legitimately runs for tens of minutes; lift the ssh cap.
+	# Run it in the background and emit a status heartbeat every
+	# D2G_STATUS_INTERVAL seconds: the guest output only lands in
+	# conversion.log, so without this the CI job log stays silent for
+	# the whole phase.
+	D2G_SSH_TIMEOUT="$RUN_TIMEOUT" vm_ssh "$ssh_port" -- 'bash /root/d2g-runner.sh 2>&1 | tee /root/d2g-run.log' \
+		>"$dir/conversion.log" 2>&1 &
+	local conv_pid=$! conv_waited=0 conv_beat=0 conv_rc=0
+	while kill -0 "$conv_pid" 2>/dev/null; do
+		sleep 5
+		conv_waited=$((conv_waited + 5))
+		if (( conv_waited - conv_beat >= D2G_STATUS_INTERVAL )); then
+			conv_beat=$conv_waited
+			# sed (not tail): conversion.log grows while we read it, and
+			# a racing tail -n1 can emit more than one line
+			say "[$NAME] converting: ${conv_waited}s elapsed; last: $(
+				sed -n '$p' "$dir/conversion.log" 2>/dev/null | cut -c1-160)"
+		fi
+	done
+	wait "$conv_pid" || conv_rc=$?
+	if (( conv_rc != 0 )); then
 		_fail convert "conversion transport failed (check $dir/conversion.log)"
 		return 1
 	fi
@@ -130,16 +150,22 @@ EOF
 	phase="reboot"
 	say "[$NAME] conversion finished, hard resetting VM and booting Gentoo"
 	vm_reset "$mon_port"
+	say "[$NAME] reset sent, waiting for Gentoo SSH (up to ${REBOOT_TIMEOUT}s)"
 	if ! vm_wait_ssh "$ssh_port" "$REBOOT_TIMEOUT"; then
 		_fail reboot "Gentoo did not come up after reboot; see $dir/serial.log"
 		return 1
 	fi
 
 	phase="verify"
+	say "[$NAME] Gentoo is up, running verification checks"
 	vm_scp_up "$ssh_port" "$HERE/verify-guest.sh" "/root/verify-guest.sh" \
 		|| { _fail verify "could not upload verify-guest.sh"; return 1; }
-	if vm_ssh "$ssh_port" -- "bash /root/verify-guest.sh '$INIT' '$FS' '$D2G_MIRROR'" \
-			>"$dir/verify.log" 2>&1; then
+	# stream the checks to the console as well as verify.log: tee keeps
+	# the artifact verbatim, sed -u (unbuffered) prefixes each line with
+	# the case name so parallel (-j) output stays attributable. The if
+	# still sees the guest exit code because pipefail is set.
+	if vm_ssh "$ssh_port" -- "bash /root/verify-guest.sh '$INIT' '$FS' '$D2G_MIRROR'" 2>&1 \
+			| tee "$dir/verify.log" | sed -u "s|^|[$NAME] |"; then
 		status="PASS"
 		say "[$NAME] PASS"
 	else

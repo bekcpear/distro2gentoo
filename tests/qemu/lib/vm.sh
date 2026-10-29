@@ -51,9 +51,14 @@ vm_start() {
 }
 
 # vm_monitor <mon_port> <monitor command...>
+# The QEMU monitor never closes the connection, and Linux
+# netcat-openbsd (unlike macOS nc) does not exit after stdin EOF
+# without -N/-q, so the call must be bounded or it wedges the harness
+# right after "hard resetting VM". The command reaches QEMU within the
+# first 0.5s; killing nc afterwards is harmless.
 vm_monitor() {
 	local port=$1; shift
-	( printf '%s\n' "$*"; sleep 0.5 ) | nc 127.0.0.1 "$port" 2>/dev/null
+	( printf '%s\n' "$*"; sleep 0.5 ) | timeout 15 nc 127.0.0.1 "$port" 2>/dev/null
 }
 
 vm_reset() { vm_monitor "$1" system_reset >/dev/null; }
@@ -95,15 +100,24 @@ vm_scp_up() {
 }
 
 # vm_wait_ssh <port> <timeout>
+# <timeout> is a wall-clock window: a single probe can itself take up to
+# D2G_SSH_TIMEOUT seconds (slirp accepts the TCP connection even while
+# the guest sshd is down, so ssh hangs until killed), and counting only
+# the sleep time would let the phase overshoot the window many times
+# over. Progress notes every 30s keep boot/reboot phases from looking
+# stuck in CI logs.
 vm_wait_ssh() {
-	local port=$1 timeout=$2 waited=0
-	while (( waited < timeout )); do
+	local port=$1 timeout=$2 start=$SECONDS waited=0 last_note=0
+	while :; do
 		if vm_ssh "$port" -- true 2>/dev/null; then
 			return 0
 		fi
+		waited=$((SECONDS - start))
+		(( waited < timeout )) || return 1
+		if (( waited - last_note >= 30 )); then
+			last_note=$waited
+			say "  waiting for SSH on port ${port} (${waited}s/${timeout}s)"
+		fi
 		sleep 5
-		waited=$((waited + 5))
-		(( waited % 30 == 0 )) && say "  waiting for SSH on port ${port} (${waited}s)"
 	done
-	return 1
 }

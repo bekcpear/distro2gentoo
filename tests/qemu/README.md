@@ -170,6 +170,9 @@ EDK2 package is missing (see §2.2).
 ```sh
 # stock cloud goldens (both arches): Debian, Ubuntu, Fedora (+Arch on x86_64)
 D2G_ARCH=<arch> bash tests/qemu/golden/fetch.sh
+# optional arguments restrict the fetch to specific distros (what the
+# GitHub Actions workflow uses, see .github/workflows/):
+D2G_ARCH=<arch> bash tests/qemu/golden/fetch.sh ubuntu
 
 # hand-built goldens, in dependency order (skip ones that do not exist
 # for the target arch — see the tables in §5). Every builder is
@@ -237,6 +240,7 @@ All optional, see `config.sh` for the full list:
 | `RUN_TIMEOUT` | 7200 | cap for the in-guest conversion |
 | `D2G_TEST_MIRROR` | BFSU Gentoo mirror | distfiles/binhost/portage mirror |
 | `D2G_SSH_TIMEOUT` | 30 | hard cap for one short ssh probe |
+| `D2G_STATUS_INTERVAL` | 300 | status heartbeat cadence (s) while converting |
 
 Results are written to `results/<arch>/<YYYYMMDD-HHMMSS>/<case>/`:
 
@@ -492,6 +496,15 @@ cannot shift the NIC slot.
   a foreground launch silently blocked the golden build scripts.
 - Golden builds wait for the dpkg/apt lock (cloud-init’s first-boot
   unattended-upgrade races the build script).
+- `vm_monitor` runs `nc` under `timeout`: the QEMU monitor never closes
+  the connection and Linux netcat-openbsd — unlike macOS nc — does not
+  exit after stdin EOF, which hung the harness right after “hard
+  resetting VM” on Linux CI while local macOS runs were unaffected.
+- `vm_wait_ssh` enforces `BOOT_TIMEOUT`/`REBOOT_TIMEOUT` as true
+  wall-clock windows: a probe against a not-yet-listening guest can take
+  the full `D2G_SSH_TIMEOUT` itself (slirp accepts the TCP connection),
+  so counting only sleep time let the reboot phase overshoot the window
+  several times over. Progress notes come every 30s.
 
 ## 8. Open items / negotiation points
 
