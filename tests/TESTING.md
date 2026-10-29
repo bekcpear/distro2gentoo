@@ -41,7 +41,8 @@ The GitHub Actions workflow
 (`.github/workflows/e2e-ubuntu-x86_64.yml`) runs both Ubuntu x86_64
 cases (`03` to Gentoo OpenRC and `04` to Gentoo systemd) on KVM-enabled
 x64 runners on every trigger; pushes to `dev` and pull requests are
-path-filtered to `src/`, `tests/`, `Makefile` and the workflow itself.
+path-filtered to `src/`, `tests/`, `Makefile` and the workflow itself,
+and changes touching only `.md` files never trigger a run.
 aarch64 is not covered there — GitHub arm64 runners have no KVM and TCG
 is too slow (see `qemu/README.md` §8). The remaining x86_64 goldens
 still await a first run.

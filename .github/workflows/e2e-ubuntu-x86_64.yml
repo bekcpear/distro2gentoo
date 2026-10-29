@@ -5,8 +5,9 @@ name: Ubuntu AMD64
 # Scope: the two Ubuntu 24.04 x86_64 cases — 03 (to Gentoo OpenRC) and
 # 04 (to Gentoo systemd) — on every trigger.
 #   - pull_request / push to dev:  only for changes under src/tests/
-#                                  Makefile or this workflow (doc-only
-#                                  changes skip the e2e run)
+#                                  Makefile or this workflow; changes
+#                                  that touch nothing but .md files
+#                                  never trigger the e2e run
 #   - workflow_dispatch/schedule:  unconditionally
 # aarch64 is intentionally not covered: GitHub arm64 runners have no KVM
 # and TCG is too slow for a conversion (tests/qemu/README.md §8).
@@ -19,12 +20,14 @@ on:
       - tests/**
       - Makefile
       - .github/workflows/e2e-ubuntu-x86_64.yml
+      - '!**.md'
   pull_request:
     paths:
       - src/**
       - tests/**
       - Makefile
       - .github/workflows/e2e-ubuntu-x86_64.yml
+      - '!**.md'
   workflow_dispatch:
   schedule:
     - cron: '0 18 * * 5' # Fridays 18:00 UTC
