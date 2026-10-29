@@ -29,11 +29,12 @@ on:
   schedule:
     - cron: '0 18 * * 5' # Fridays 18:00 UTC
 
-# One heavy e2e run per trigger kind and ref; a newer push / PR update
-# cancels its stale run. Including event_name keeps a scheduled run on
-# dev from cancelling (or being cancelled by) a push-triggered one.
+# A newer push / PR update cancels its stale queued or in-progress run.
+# Keyed on workflow_ref (the file path) so renaming the workflow cannot
+# orphan an in-flight run, and on event_name so a scheduled run on dev
+# never cancels (or gets cancelled by) a push-triggered one.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  group: ${{ github.workflow_ref }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
