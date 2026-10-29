@@ -4,11 +4,7 @@
 
 [![schedule](https://github.com/bekcpear/distro2gentoo/actions/workflows/e2e-ubuntu-x86_64.yml/badge.svg?branch=dev&event=schedule)](https://github.com/bekcpear/distro2gentoo/actions/workflows/e2e-ubuntu-x86_64.yml?query=branch%3Adev+event%3Aschedule) (schedule)
 
-```
-   ***************************************
-   *** This is a version worth trying! ***
-   ***************************************
-```
+*This is a version worth trying!*
 
 #### How to run
 
@@ -18,15 +14,37 @@
 #
 # options:
 #
-#   --yyy                   Skip all interactive confirmations (assume yes),
-#                           use defaults; for unattended/automated runs
-#
 #   --disable-binhost       Disable the binhost when installing Gentoo
 #
 #   -h, --help              Show this help
 #
 
 wget 'https://gitlab.com/cwittlut/distro2gentoo/-/raw/dev/distro2gentoo.sh'
+bash distro2gentoo.sh
+```
+
+#### Environment variables
+
+All optional; they are primarily used in `D2G_NONINTERACTIVE=1` mode —
+the switch for unattended / automated (CI) runs that the other variables
+below preset the choices for:
+
+| variable | example | effect |
+|---|---|---|
+| `D2G_NONINTERACTIVE` | `1` | switch for unattended runs: the mirror is used without a selection prompt, and the stage3 selection falls back to the default (the `openrc` stage3) without prompting |
+| `D2G_MIRROR` | `https://gentoo.osuosl.org` | preset the distfiles/binhost mirror; skips geo-detection and the mirror-list lookup entirely |
+| `D2G_GIT_MIRROR` | `https://github.com/gentoo-mirror/gentoo.git` | preset the portage tree git mirror (initial `git clone` and `sync-uri`); defaults to the GitHub mirror, or the BFSU mirror when geo-detection resolves to CN |
+| `D2G_STAGE3_REGEX` | `'^stage3-amd64-systemd-'` | select the first stage3 tarball whose name matches this ERE, overriding both the interactive selection and the default; aborts when nothing matches. Required for a systemd target in unattended runs, since the default is the `openrc` stage3 |
+| `D2G_COUNTDOWN` | `0` | skip every countdown pause (the 5 s start countdown and the final 30 s sync wait) |
+
+A typical unattended invocation:
+
+```bash
+D2G_NONINTERACTIVE=1 \
+D2G_COUNTDOWN=0 \
+D2G_MIRROR='https://gentoo.osuosl.org' \
+D2G_GIT_MIRROR='https://github.com/gentoo-mirror/gentoo.git' \
+D2G_STAGE3_REGEX='^stage3-amd64-systemd-' \
 bash distro2gentoo.sh
 ```
 

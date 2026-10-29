@@ -186,8 +186,6 @@ Usage: distro2gentoo [<options>]
 
 options:
 
-	--yyy                   Answer yes to every confirmation, skip all
-	                        interactive prompts and use defaults (unattended)
 	--disable-binhost       Disable the binhost when installing Gentoo
 	-h, --help              Show this help
 "
@@ -232,7 +230,7 @@ countdown() {
 }
 
 confirm_or_abort() {
-	if [[ ${D2G_ASSUME_YES:-0} == 1 || ${D2G_NONINTERACTIVE:-0} == 1 ]]; then
+	if [[ ${D2G_NONINTERACTIVE:-0} == 1 ]]; then
 		return 0
 	fi
 	# Only prompt when running interactively (stdin is a real TTY).
@@ -275,20 +273,15 @@ parseParams() {
 		_log ee "The Linux version of command 'getopt' is necessory to parse parameters."
 	fi
 	local _args
-	if ! _args=$(getopt -o 'h' -l 'yyy,disable-binhost,help' -n 'distro2gentoo' -- "$@"); then
+	if ! _args=$(getopt -o 'h' -l 'disable-binhost,help' -n 'distro2gentoo' -- "$@"); then
 		printHelp 1
 	fi
 	set -e
 
 	# parse arguments
 	eval "set -- ${_args}"
-	local _assume_yes=0
 	while true; do
 		case "${1}" in
-			--yyy)
-				_assume_yes=1
-				shift
-				;;
 			--disable-binhost)
 				BINHOST_ENABLED=0
 				shift
@@ -305,9 +298,6 @@ parseParams() {
 				;;
 		esac
 	done
-	if [ "$_assume_yes" -eq 1 ]; then
-		export D2G_ASSUME_YES=1
-	fi
 }
 
 

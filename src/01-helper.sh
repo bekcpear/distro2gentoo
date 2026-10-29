@@ -9,8 +9,6 @@ Usage: distro2gentoo [<options>]
 
 options:
 
-	--yyy                   Answer yes to every confirmation, skip all
-	                        interactive prompts and use defaults (unattended)
 	--disable-binhost       Disable the binhost when installing Gentoo
 	-h, --help              Show this help
 "
@@ -57,12 +55,12 @@ countdown() {
 	echo -e "\e[0m"
 }
 
-# Interactive y/N gate. With --yyy (D2G_ASSUME_YES=1) it proceeds
-# with the default automatically. Otherwise the user must answer y/Y to
-# continue; anything else (including empty input -> default N) aborts.
+# Interactive y/N gate. With D2G_NONINTERACTIVE=1 it proceeds with the
+# default automatically. Otherwise the user must answer y/Y to continue;
+# anything else (including empty input -> default N) aborts.
 # $1: prompt line(s) already printed by the caller
 confirm_or_abort() {
-	if [[ ${D2G_ASSUME_YES:-0} == 1 || ${D2G_NONINTERACTIVE:-0} == 1 ]]; then
+	if [[ ${D2G_NONINTERACTIVE:-0} == 1 ]]; then
 		return 0
 	fi
 	# Only prompt when running interactively (stdin is a real TTY).

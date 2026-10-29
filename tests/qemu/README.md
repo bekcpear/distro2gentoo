@@ -222,8 +222,8 @@ D2G_ARCH=x86_64 bash tests/qemu/run.sh   # after building the §4.2 goldens
 
 `run.sh -h` lists the cases available for the selected arch. The
 conversion runs non-interactively; to drive the product script manually
-inside a guest use `--yyy` to skip its prompts (non-TTY sessions do so
-automatically).
+inside a guest export `D2G_NONINTERACTIVE=1` to skip its prompts
+(non-TTY sessions do so automatically).
 
 ### 4.4 Configuration overrides
 
@@ -335,9 +335,9 @@ inconsistent. A case therefore contains only `NAME`, `GOLDEN`, and
 The product script also asks for confirmation before the first-tip
 countdown and again before the “Following actions will affect the real
 system” countdown: answer `y`/`Y` to proceed; anything else (including
-just pressing Enter) aborts. Pass `--yyy` to skip all prompts for
-unattended runs; non-TTY/`D2G_NONINTERACTIVE=1` sessions proceed
-automatically (this is what the harness uses).
+just pressing Enter) aborts. Set `D2G_NONINTERACTIVE=1` to skip all
+prompts for unattended runs; non-TTY sessions proceed automatically
+(this is what the harness uses).
 
 ### aarch64 matrix (all 14 PASS)
 
