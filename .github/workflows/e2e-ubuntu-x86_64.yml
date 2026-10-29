@@ -1,4 +1,4 @@
-name: E2E Ubuntu AMD64
+name: Ubuntu AMD64
 
 # QEMU/KVM end-to-end conversion tests on GitHub-hosted x64 runners
 # (standard Linux x64 runners expose /dev/kvm via nested virtualization).
