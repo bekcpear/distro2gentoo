@@ -1,5 +1,9 @@
 ## A script that can convert a Linux distro to Gentoo Linux
 
+[![push](https://github.com/bekcpear/distro2gentoo/actions/workflows/e2e-ubuntu-x86_64.yml/badge.svg?branch=dev&event=push)](https://github.com/bekcpear/distro2gentoo/actions/workflows/e2e-ubuntu-x86_64.yml?query=branch%3Adev+event%3Apush) (push)
+
+[![schedule](https://github.com/bekcpear/distro2gentoo/actions/workflows/e2e-ubuntu-x86_64.yml/badge.svg?branch=dev&event=schedule)](https://github.com/bekcpear/distro2gentoo/actions/workflows/e2e-ubuntu-x86_64.yml?query=branch%3Adev+event%3Aschedule) (schedule)
+
 ```
    ***************************************
    *** This is a version worth trying! ***
